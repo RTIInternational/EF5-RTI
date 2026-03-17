@@ -20,6 +20,13 @@ FREQ=2u
 LOC=/home/apreucil/Kewaunee/preciprate_tif
 NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.tif
 
+[PrecipForcing MRMS_GRIB]
+TYPE=GRIB2
+UNIT=mm/h
+FREQ=2u
+LOC=/home/apreucil/Kewaunee/preciprate_gz/preciprate_gz
+NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.grib2
+
 [Gauge 0] cellx=27 celly=21 outputts=true obs=/home/apreucil/Kewaunee/observations/Streamflow_Time_Series_CMS_UTC_USGS_04085200.csv #Num Cells = 392.000000
 [Gauge 1] cellx=0 celly=17 outputts=false #Num Cells = 15.000000
 [Gauge 2] cellx=6 celly=7 outputts=false #Num Cells = 14.000000
@@ -101,7 +108,7 @@ STYLE=simu
 MODEL=crest
 ROUTING=KW
 BASIN=0
-PRECIP=MRMS
+PRECIP=MRMS_GRIB
 PET=CLIMO
 #OUTPUT=/home/apreucil/Kewaunee/integration
 OUTPUT=/home/apreucil/Kewaunee/results
@@ -111,10 +118,10 @@ PARAM_SET=EF5
 ROUTING_PARAM_Set=EF5
 output_grids=MAXUNITSTREAMFLOW|MAXSTREAMFLOW
 TIMESTEP=2u
-TIME_BEGIN=20220727120000
-#TIME_WARMEND=20220727120000
+TIME_BEGIN=20230519000000
+#TIME_WARMEND=20230517120000
 #TIME_STATE=20220730120000
-TIME_END=20220730120000
+TIME_END=20230520231200
 
 [Execute]
 task=CREST_Simulation

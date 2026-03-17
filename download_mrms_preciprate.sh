@@ -10,13 +10,14 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Download MRMS PrecipRate .gz files from mtarchive and decompress them.
+Download MRMS PrecipRate .gz files from mtarchive and optionally decompress them.
 
 Options:
   -s, --start-date YYYY-MM-DD   Start date (inclusive). Default: ${START_DATE_DEFAULT}
   -e, --end-date YYYY-MM-DD     End date (inclusive). Default: ${END_DATE_DEFAULT}
   -d, --dest-dir PATH           Destination directory. Default: ${DEST_DIR_DEFAULT}
   -n, --dry-run                 Show what would be downloaded/skipped without changes
+  -u, --unzip                   Decompress downloaded .gz files after downloading (default: false)
   -h, --help                    Show this help message
 EOF
 }
@@ -25,6 +26,7 @@ START_DATE="$START_DATE_DEFAULT"
 END_DATE="$END_DATE_DEFAULT"
 DEST_DIR="$DEST_DIR_DEFAULT"
 DRY_RUN="false"
+UNZIP="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     -n|--dry-run)
       DRY_RUN="true"
+      shift
+      ;;
+    -u|--unzip)
+      UNZIP="true"
       shift
       ;;
     -h|--help)
@@ -84,6 +90,9 @@ echo "Downloading .gz files into: $DEST_DIR"
 echo "Date range: ${START_DATE} to ${END_DATE}"
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "Dry-run mode enabled: no files will be downloaded or decompressed."
+fi
+if [[ "$UNZIP" == "true" ]]; then
+  echo "Unzip mode enabled: .gz files will be decompressed after downloading."
 fi
 
 current_epoch="$START_EPOCH"
@@ -133,22 +142,23 @@ while (( current_epoch <= END_EPOCH )); do
   current_epoch=$(( current_epoch + 86400 ))
 done
 
-shopt -s nullglob
-gz_files=("$DEST_DIR"/*.gz)
-
 if [[ "$DRY_RUN" == "true" ]]; then
   echo "Summary: skipped=${skipped_count}, would-download=${would_download_count}, downloaded=0"
   echo "Dry-run complete. No changes made."
   exit 0
 fi
 
-if (( ${#gz_files[@]} == 0 )); then
-  echo "No .gz files found to decompress in $DEST_DIR"
-  exit 0
+echo "Summary: skipped=${skipped_count}, downloaded=${downloaded_count}"
+
+if [[ "$UNZIP" == "true" ]]; then
+  shopt -s nullglob
+  gz_files=("$DEST_DIR"/*.gz)
+  if (( ${#gz_files[@]} == 0 )); then
+    echo "No .gz files found to decompress in $DEST_DIR"
+  else
+    echo "Decompressing ${#gz_files[@]} files..."
+    gunzip -f "${gz_files[@]}"
+  fi
 fi
 
-echo "Decompressing ${#gz_files[@]} files..."
-gunzip -f "${gz_files[@]}"
-
-echo "Summary: skipped=${skipped_count}, downloaded=${downloaded_count}"
 echo "Done. Files are available in: $DEST_DIR"
