@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEST_DIR_DEFAULT="${HOME}/MRMS_preciprate"
-START_DATE_DEFAULT="2022-07-27"
-END_DATE_DEFAULT="2022-07-30"
+DEST_DIR_DEFAULT="/c/Repos/EF5-RTI/Precipitation"
+START_DATE_DEFAULT="2025-05-12"
+END_DATE_DEFAULT="2025-05-15"
 ARCHIVE_BASE_URL="https://mtarchive.geol.iastate.edu"
 
 usage() {
