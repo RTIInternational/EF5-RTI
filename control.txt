@@ -1,29 +1,29 @@
 [Basic]
-DEM=BasicData\South_Toe_03463300_dem.tif
-DDM=BasicData\South_Toe_03463300_flow_direction.tif
-FAM=BasicData\South_Toe_03463300_flow_accumulation.tif
+DEM=BasicData/South_Toe_03463300_dem.tif
+DDM=BasicData/South_Toe_03463300_flow_direction.tif
+FAM=BasicData/South_Toe_03463300_flow_accumulation.tif
 PROJ=geographic
 ESRIDDM=true
 SelfFAM=false
 
 [PrecipForcing MRMS]
-TYPE=TIF
+TYPE=GRIB2
 UNIT=mm/h
-FREQ=2u
-LOC=Forcings\Precipitation\
-NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.tif
+FREQ=1h
+LOC=Forcings/Precipitation/hourly
+NAME=RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz
 
 [PETForcing PET]
 TYPE=TIF
 UNIT=mm/d
 FREQ=1m
-LOC=Forcings\PET\
+LOC=Forcings/PET/
 NAME=PET_05_usa.tif
 
 [Gauge 03463300]
 LON=-82.1841666666667
 LAT=35.8313888888889
-OBS=observations\Streamflow_Time_Series_CMS_UTC_USGS_03463300.csv
+OBS=observations/Streamflow_Time_Series_CMS_UTC_USGS_03463300.csv
 OUTPUTTS=true
 BASINAREA=112
 WANTCO=true
@@ -32,10 +32,10 @@ WANTCO=true
 GAUGE=03463300
 
 [CrestParamSet South_Toecrest]
-wm_grid=data\EF5_US_Params\crest_params\wm_usa.tif
-b_grid=data\EF5_US_Params\crest_params\b_usa.tif
-im_grid=data\EF5_US_Params\crest_params\im_usa.tif
-fc_grid=data\EF5_US_Params\crest_params\ksat_usa.tif
+wm_grid=data/EF5_US_Params/crest_params/wm_usa.tif
+b_grid=data/EF5_US_Params/crest_params/b_usa.tif
+im_grid=data/EF5_US_Params/crest_params/im_usa.tif
+fc_grid=data/EF5_US_Params/crest_params/ksat_usa.tif
 gauge=03463300
 wm=1.0
 b=1.0
@@ -45,11 +45,11 @@ fc=1.0
 iwu=24.999905 
 
 [kwparamset South_Toekw]
-under_grid=data\EF5_US_Params\kw_params\ksat_usa.tif
-leaki_grid=data\EF5_US_Params\kw_params\leaki_usa.tif
-alpha_grid=data\EF5_US_Params\kw_params\alpha_usa.tif
-beta_grid=data\EF5_US_Params\kw_params\beta_usa.tif
-alpha0_grid=data\EF5_US_Params\kw_params\alpha0_usa.tif
+under_grid=data/EF5_US_Params/kw_params/ksat_usa.tif
+leaki_grid=data/EF5_US_Params/kw_params/leaki_usa.tif
+alpha_grid=data/EF5_US_Params/kw_params/alpha_usa.tif
+beta_grid=data/EF5_US_Params/kw_params/beta_usa.tif
+alpha0_grid=data/EF5_US_Params/kw_params/alpha0_usa.tif
 gauge=03463300
 alpha0=1.0
 alpha=1.0
@@ -67,12 +67,12 @@ ROUTING_PARAM_SET=South_Toekw
 BASIN=South_Toe
 PRECIP=MRMS
 PET=PET
-OUTPUT=Output\
-STATES=states\
+OUTPUT=Output/
+STATES=states/
 output_grids=MAXUNITSTREAMFLOW|MAXSTREAMFLOW
-TIMESTEP=2u
+TIMESTEP=1h
 TIME_BEGIN=202505120000
-TIME_END=202505152358
+TIME_END=202505142300
 PARAM_SET=South_Toecrest
 
 [Execute]
