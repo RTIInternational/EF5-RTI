@@ -16,6 +16,31 @@ import dataretrieval.nwis as nwis
 from pynhd import NLDI
 from rasterio.mask import mask
 
+"""
+Workflow Overview:
+
+1. Read gage IDs from gages/gage_ids.csv
+2. Delineate basin boundaries from USGS gages
+3. Clip EF5 basic rasters for each basin
+4. Download USGS observed streamflow
+5. Build one EF5 control file per gage
+6. Run the EF5 executable for each control file
+
+Expected project structure
+- gages/
+- data/EF5_US_Params/
+- Forcings/
+- BasicData/
+- observations/
+- Output/
+- states/
+
+Main command-line inputs
+- --time-begin
+- --time-end
+- --model
+- --freq
+"""
 
 def delineate_basin_from_gage(gage_id, out_dir):
     gage_id = str(gage_id).strip()
@@ -200,6 +225,69 @@ def clip_raster_to_basin(in_raster, basin_gdf, out_raster):
 
     return str(out_raster)
 
+def get_max_fam_cell_coords(flow_accumulation_raster):
+    """
+    Find the highest-value cell in a clipped flow accumulation raster and
+    return its value and center coordinates in EPSG:4326.
+
+    Parameters
+    ----------
+    flow_accumulation_raster : str or Path
+        Path to clipped flow accumulation raster.
+
+    Returns
+    -------
+    dict
+        Dictionary with:
+        - fam_value
+        - snapped_longitude
+        - snapped_latitude
+        - row
+        - col
+    """
+    flow_accumulation_raster = Path(flow_accumulation_raster)
+
+    with rasterio.open(flow_accumulation_raster) as src:
+        data = src.read(1)
+        nodata = src.nodata
+
+        if nodata is not None:
+            valid_mask = data != nodata
+        else:
+            # if nodata is not set, assume all finite cells are valid
+            valid_mask = pd.notna(data)
+
+        if not valid_mask.any():
+            raise ValueError(f"No valid cells found in {flow_accumulation_raster}")
+
+        masked = data.copy()
+        masked[~valid_mask] = masked[valid_mask].min() - 1
+
+        flat_index = masked.argmax()
+        row, col = divmod(flat_index, masked.shape[1])
+
+        fam_value = float(data[row, col])
+
+        x, y = src.xy(row, col, offset="center")
+
+        if src.crs and str(src.crs) != "EPSG:4326":
+            point_gdf = gpd.GeoDataFrame(
+                geometry=gpd.points_from_xy([x], [y]),
+                crs=src.crs,
+            ).to_crs("EPSG:4326")
+            snapped_longitude = float(point_gdf.geometry.x.iloc[0])
+            snapped_latitude = float(point_gdf.geometry.y.iloc[0])
+        else:
+            snapped_longitude = float(x)
+            snapped_latitude = float(y)
+
+    return {
+        "fam_value": fam_value,
+        "snapped_longitude": snapped_longitude,
+        "snapped_latitude": snapped_latitude,
+        "fam_row": int(row),
+        "fam_col": int(col),
+    }
 
 def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accumulation_raster, dem_raster, output_dir):
     basin_file = Path(basin_file)
@@ -222,6 +310,8 @@ def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accum
     clip_raster_to_basin(flow_accumulation_raster, basin_gdf, flow_acc_out)
     clip_raster_to_basin(dem_raster, basin_gdf, dem_out)
 
+    fam_info = get_max_fam_cell_coords(flow_acc_out)
+
     return {
         "gage_id": gage_id,
         "status": "success",
@@ -229,8 +319,12 @@ def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accum
         "flow_direction": str(flow_dir_out),
         "flow_accumulation": str(flow_acc_out),
         "dem": str(dem_out),
+        "fam_value": fam_info["fam_value"],
+        "snapped_longitude": fam_info["snapped_longitude"],
+        "snapped_latitude": fam_info["snapped_latitude"],
+        "fam_row": fam_info["fam_row"],
+        "fam_col": fam_info["fam_col"],
     }
-
 
 def clip_main_layers_for_all_basins(max_workers=4):
     project_root = Path.cwd()
@@ -283,6 +377,34 @@ def clip_main_layers_for_all_basins(max_workers=4):
 
     results_df = pd.DataFrame(results).sort_values("gage_id")
     results_df.to_csv(output_dir / "main_layer_clipping_summary.csv", index=False)
+
+    # Update basin delineation summary with snapped outlet coordinates
+    basin_summary_csv = project_root / "data" / "basin_delineations" / "basin_delineation_summary.csv"
+
+    if basin_summary_csv.exists():
+        basin_summary_df = pd.read_csv(basin_summary_csv, dtype={"gage_id": str})
+
+        clip_cols = [
+            "gage_id",
+            "fam_value",
+            "snapped_longitude",
+            "snapped_latitude",
+            "fam_row",
+            "fam_col",
+        ]
+
+        # remove old versions of these columns if they already exist
+        for col in clip_cols[1:]:
+            if col in basin_summary_df.columns:
+                basin_summary_df = basin_summary_df.drop(columns=col)
+
+        merged_df = basin_summary_df.merge(
+            results_df[clip_cols],
+            on="gage_id",
+            how="left",
+        )
+
+        merged_df.to_csv(basin_summary_csv, index=False)
 
     return results_df
 
@@ -724,8 +846,8 @@ def _create_one_control_file(
 
         control_text = build_control_file_text(
             gage_id=gage_id,
-            latitude=float(row["latitude"]),
-            longitude=float(row["longitude"]),
+            latitude=float(row["snapped_latitude"]),
+            longitude=float(row["snapped_longitude"]),
             basin_area_sqkm=float(row["basin_area_sqkm"]),
             time_begin=time_begin,
             time_end=time_end,
@@ -786,7 +908,13 @@ def create_control_files_for_all_gages(
             f"Available columns: {list(gages_df.columns)}"
         )
 
-    required_summary_cols = {"gage_id", "latitude", "longitude", "basin_area_sqkm"}
+    required_summary_cols = {
+        "gage_id",
+        "basin_area_sqkm",
+        "snapped_latitude",
+        "snapped_longitude",
+    }
+
     missing_cols = required_summary_cols - set(summary_df.columns)
     if missing_cols:
         raise ValueError(
