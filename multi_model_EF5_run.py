@@ -16,6 +16,15 @@ import dataretrieval.nwis as nwis
 from pynhd import NLDI
 from rasterio.mask import mask
 
+# Plotly imports for visualization
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    print("Warning: Plotly not available. Plots will be skipped.")
+    PLOTLY_AVAILABLE = False
+
 """
 Workflow Overview:
 
@@ -25,6 +34,7 @@ Workflow Overview:
 4. Download USGS observed streamflow
 5. Build one EF5 control file per gage
 6. Run the EF5 executable for each control file
+7. Create interactive Plotly plots for successful runs
 
 Expected project structure
 - gages/
@@ -1059,6 +1069,239 @@ def run_ef5_for_all_controls(max_workers: int = 4):
 
     return results_df
 
+
+def create_plotly_plot_for_gage(
+    gage_id: str,
+    model_name: str,
+    csv_file: Path,
+    output_dir: Path,
+):
+    """
+    Create interactive Plotly plot for one gage/model combination.
+    
+    Args:
+        gage_id: USGS gage ID
+        model_name: Model name (CREST, SAC, HP)
+        csv_file: Path to EF5 output CSV file
+        output_dir: Directory where to save HTML plot
+    
+    Returns:
+        dict with status and file path information
+    """
+    if not PLOTLY_AVAILABLE:
+        return {
+            "gage_id": gage_id,
+            "model": model_name,
+            "status": "skipped",
+            "error": "Plotly not available",
+        }
+    
+    try:
+        if not csv_file.exists():
+            return {
+                "gage_id": gage_id,
+                "model": model_name,
+                "status": "failed",
+                "error": f"CSV file not found: {csv_file}",
+            }
+        
+        # Read and prepare data
+        df = pd.read_csv(csv_file)
+        df.columns = [c.strip() for c in df.columns]
+        df["Time"] = pd.to_datetime(df["Time"])
+        
+        df["Discharge(m^3 s^-1)"] = pd.to_numeric(df["Discharge(m^3 s^-1)"], errors="coerce")
+        df["Observed(m^3 s^-1)"] = pd.to_numeric(df["Observed(m^3 s^-1)"], errors="coerce")
+        df["Precip(mm h^-1)"] = pd.to_numeric(df["Precip(mm h^-1)"], errors="coerce")
+        
+        # Interpolate observed values for plotting
+        df["Observed_interp"] = df["Observed(m^3 s^-1)"].interpolate(method="linear")
+        
+        # Create subplot with secondary y-axis
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        # Add simulated discharge trace (dashed blue)
+        fig.add_trace(
+            go.Scatter(
+                x=df["Time"],
+                y=df["Discharge(m^3 s^-1)"],
+                mode="lines",
+                name="Simulated Discharge",
+                line=dict(width=2, color="blue", dash="dash")
+            ),
+            secondary_y=False,
+        )
+        
+        # Add observed streamflow trace (solid orange)
+        fig.add_trace(
+            go.Scatter(
+                x=df["Time"],
+                y=df["Observed_interp"],
+                mode="lines",
+                name="Observed Streamflow",
+                line=dict(width=2, color="orange")
+            ),
+            secondary_y=False,
+        )
+        
+        # Add precipitation trace (on secondary y-axis)
+        fig.add_trace(
+            go.Bar(
+                x=df["Time"],
+                y=df["Precip(mm h^-1)"],
+                name="Precipitation",
+                opacity=0.35,
+                marker_color="lightblue"
+            ),
+            secondary_y=True,
+        )
+        
+        # Set x-axis title
+        fig.update_xaxes(title_text="Time")
+        
+        # Set y-axes titles
+        fig.update_yaxes(title_text="Streamflow (m³/s)", secondary_y=False)
+        fig.update_yaxes(title_text="Precipitation (mm/h)", secondary_y=True)
+        
+        # Invert precipitation axis
+        fig.update_yaxes(autorange="reversed", secondary_y=True)
+        
+        # Update layout
+        fig.update_layout(
+            title=f"{model_name.upper()} Model - Gage {gage_id}: Observed vs Simulated Streamflow with Precipitation",
+            xaxis=dict(rangeslider_visible=True),
+            template="plotly_white",
+            hovermode="x unified",
+            legend=dict(x=0.01, y=0.99),
+            height=600,
+            width=1200
+        )
+        
+        # Save as HTML file
+        html_file = output_dir / f"{model_name.upper()}_{gage_id}_plot.html"
+        fig.write_html(html_file)
+        
+        return {
+            "gage_id": gage_id,
+            "model": model_name,
+            "status": "success",
+            "html_file": str(html_file),
+            "csv_file": str(csv_file),
+        }
+    
+    except Exception as e:
+        return {
+            "gage_id": gage_id,
+            "model": model_name,
+            "status": "failed",
+            "error": str(e),
+        }
+
+
+def create_plots_for_all_successful_runs(
+    ef5_results_df: pd.DataFrame,
+    control_results_df: pd.DataFrame,
+    max_workers: int = 4,
+):
+    """
+    Create Plotly plots for all successful EF5 runs.
+    
+    Args:
+        ef5_results_df: Results from EF5 execution
+        control_results_df: Results from control file creation
+        max_workers: Number of parallel workers for plot creation
+    
+    Returns:
+        DataFrame with plot creation results
+    """
+    if not PLOTLY_AVAILABLE:
+        print("Plotly not available. Skipping plot creation.")
+        return pd.DataFrame()
+    
+    project_root = Path.cwd()
+    
+    # Get successful EF5 runs
+    successful_runs = ef5_results_df[ef5_results_df["status"] == "success"]
+    
+    if successful_runs.empty:
+        print("No successful EF5 runs found. Skipping plot creation.")
+        return pd.DataFrame()
+    
+    # Create lookup for control file info
+    control_lookup = {}
+    for _, row in control_results_df.iterrows():
+        if row["status"] == "success":
+            control_lookup[row["gage_id"]] = row
+    
+    plot_tasks = []
+    
+    # Create plot tasks for each successful run
+    for _, ef5_row in successful_runs.iterrows():
+        gage_id = ef5_row["gage_id"]
+        
+        if gage_id not in control_lookup:
+            continue
+        
+        control_row = control_lookup[gage_id]
+        model_name = control_row["model_to_run"].lower()
+        
+        # Determine CSV file path and output directory
+        output_dir = project_root / "Output" / gage_id / model_name
+        csv_file = output_dir / f"ts.{gage_id}.{model_name}.csv"
+        
+        plot_tasks.append({
+            "gage_id": gage_id,
+            "model_name": model_name,
+            "csv_file": csv_file,
+            "output_dir": output_dir,
+        })
+    
+    if not plot_tasks:
+        print("No plotting tasks generated. Skipping plot creation.")
+        return pd.DataFrame()
+    
+    print(f"Creating plots for {len(plot_tasks)} gage/model combinations...")
+    
+    results = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_task = {
+            executor.submit(
+                create_plotly_plot_for_gage,
+                task["gage_id"],
+                task["model_name"],
+                task["csv_file"],
+                task["output_dir"],
+            ): task
+            for task in plot_tasks
+        }
+        
+        for future in as_completed(future_to_task):
+            task = future_to_task[future]
+            
+            try:
+                result = future.result()
+                results.append(result)
+                
+                if result["status"] == "success":
+                    print(f"Plot created: {result['gage_id']} {result['model'].upper()}")
+                else:
+                    print(f"Plot failed: {result['gage_id']} {result['model'].upper()} -> {result.get('error', 'Unknown error')}")
+            
+            except Exception as e:
+                results.append({
+                    "gage_id": task["gage_id"],
+                    "model": task["model_name"],
+                    "status": "failed",
+                    "error": str(e),
+                })
+                print(f"Plot failed: {task['gage_id']} {task['model_name'].upper()} -> {e}")
+    
+    results_df = pd.DataFrame(results).sort_values(["gage_id", "model"])
+    results_df.to_csv(project_root / "plot_creation_summary.csv", index=False)
+    
+    return results_df
+
 def run_full_ef5_setup(
     time_begin: str,
     time_end: str,
@@ -1069,6 +1312,8 @@ def run_full_ef5_setup(
     usgs_workers: int = 8,
     control_workers: int = 8,
     ef5_workers: int = 4,
+    plot_workers: int = 4,
+    create_plots: bool = True,
 ):
     print("\n--- Step 1: Delineating basins ---")
     basin_results = delineate_basins_from_csv(max_workers=basin_workers)
@@ -1095,12 +1340,27 @@ def run_full_ef5_setup(
     print("\n--- Step 5: Running EF5 executable ---")
     ef5_results = run_ef5_for_all_controls(max_workers=ef5_workers)
 
+    # Step 6: Create interactive plots (if requested and successful runs exist)
+    plot_results = pd.DataFrame()
+    if create_plots and PLOTLY_AVAILABLE:
+        print("\n--- Step 6: Creating interactive Plotly plots ---")
+        plot_results = create_plots_for_all_successful_runs(
+            ef5_results_df=ef5_results,
+            control_results_df=control_results,
+            max_workers=plot_workers,
+        )
+    elif create_plots and not PLOTLY_AVAILABLE:
+        print("\n--- Step 6: Skipping plots (Plotly not available) ---")
+    else:
+        print("\n--- Step 6: Skipping plots (disabled by user) ---")
+
     return {
         "basins": basin_results,
         "clipping": clip_results,
         "usgs": usgs_results,
         "control_files": control_results,
         "ef5_runs": ef5_results,
+        "plots": plot_results,
     }
 
 
@@ -1160,6 +1420,17 @@ def main():
         default=4,
         help="Number of parallel EF5 runs",
     )
+    parser.add_argument(
+        "--plot-workers",
+        type=int,
+        default=4,
+        help="Number of parallel workers for plot creation",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Skip creating interactive Plotly plots",
+    )
 
     args = parser.parse_args()
 
@@ -1173,6 +1444,8 @@ def main():
         usgs_workers=args.usgs_workers,
         control_workers=args.control_workers,
         ef5_workers=args.ef5_workers,
+        plot_workers=args.plot_workers,
+        create_plots=not args.no_plots,
     )
 
     print("\nWorkflow complete.")
@@ -1190,6 +1463,18 @@ def main():
 
     print("\nEF5 execution summary:")
     print(results["ef5_runs"])
+
+    if not results["plots"].empty:
+        print("\nPlot creation summary:")
+        print(results["plots"])
+    else:
+        print("\nNo plots were created.")
+
+    if not results["plots"].empty:
+        print("\nPlot creation summary:")
+        print(results["plots"])
+    else:
+        print("\nNo plots were created.")
 
 
 if __name__ == "__main__":
