@@ -16,15 +16,6 @@ import dataretrieval.nwis as nwis
 from pynhd import NLDI
 from rasterio.mask import mask
 
-# Plotly imports for visualization
-try:
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    PLOTLY_AVAILABLE = True
-except ImportError:
-    print("Warning: Plotly not available. Plots will be skipped.")
-    PLOTLY_AVAILABLE = False
-
 """
 EF5 Multi-Model Hydrological Simulation Framework
 
@@ -107,6 +98,15 @@ python multi_model_EF5_run.py \
 - NLDI: National Linked Data Index - USGS service for watershed delineation
 - Basin Outlet: Point of maximum flow accumulation, used as the computational streamflow location
 """
+
+# Plotly imports for visualization
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    print("Warning: Plotly not available. Plots will be skipped.")
+    PLOTLY_AVAILABLE = False
 
 def delineate_basin_from_gage(gage_id, out_dir):
     """
