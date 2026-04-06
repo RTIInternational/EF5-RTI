@@ -26,33 +26,120 @@ except ImportError:
     PLOTLY_AVAILABLE = False
 
 """
-Workflow Overview:
+EF5 Multi-Model Hydrological Simulation Framework
 
-1. Read gage IDs from gages/gage_ids.csv
-2. Delineate basin boundaries from USGS gages
-3. Clip EF5 basic rasters for each basin
-4. Download USGS observed streamflow
-5. Build one EF5 control file per gage
-6. Run the EF5 executable for each control file
-7. Create interactive Plotly plots for successful runs
+This script orchestrates a complete end-to-end hydrological modeling workflow using the EF5 
+(Ensemble Framework for Flash Flood Forecasting) model. It processes multiple stream gages 
+in parallel, supporting three hydrological models: CREST, SAC-SMA, and HP.
 
-Expected project structure
-- gages/
-- data/EF5_US_Params/
-- Forcings/
-- BasicData/
-- observations/
-- Output/
-- states/
+=== WORKFLOW OVERVIEW ===
 
-Main command-line inputs
-- --time-begin
-- --time-end
-- --model
-- --freq
+    ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+    │  1. Basin       │────▶│  2. Raster       │────▶│  3. USGS Data   │
+    │  Delineation    │     │  Clipping        │     │  Download       │
+    └─────────────────┘     └──────────────────┘     └─────────────────┘
+           │                         │                         │
+           ▼                         ▼                         ▼
+    Read gages/gage_ids.csv    Clip DEM, flow dir,      Download observed
+    → USGS site metadata       flow accumulation        streamflow from
+    → NLDI basin boundaries    → Find max FAM coords    USGS Instantaneous
+    → Save GeoJSON files       → Save to BasicData/     Values (IV) API
+    
+    ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+    │  4. Control     │────▶│  5. EF5          │────▶│  6. Visualization │
+    │  File Creation  │     │  Execution       │     │  (Optional)      │
+    └─────────────────┘     └──────────────────┘     └─────────────────┘
+           │                         │                         │
+           ▼                         ▼                         ▼
+    Merge basin+raster+obs    Run ./ef5 executable      Create interactive
+    → Build EF5 config        subprocess for each       Plotly HTML plots
+    → Generate control_*.txt  control file              comparing observed
+    files with model params  → Output/ and states/     vs. modeled flows
+
+=== EXPECTED PROJECT STRUCTURE ===
+
+    project_root/
+    ├── gages/gage_ids.csv              # Input: List of USGS gage IDs
+    ├── data/EF5_US_Params/             # Input: Model parameter grids
+    │   ├── basic/{dem,fdir,facc}_usa.tif
+    │   ├── crest_params/*.tif
+    │   ├── sac_params/*.tif
+    │   └── kw_params/*.tif
+    ├── Forcings/                       # Input: Precipitation and PET data
+    │   ├── Precipitation/{2min,hourly}/
+    │   └── PET/
+    ├── ef5                            # Input: EF5 executable
+    ├── data/basin_delineations/       # Created: Basin boundary files
+    ├── BasicData/                     # Created: Clipped rasters
+    ├── observations/                  # Created: USGS streamflow CSVs
+    ├── control_*.txt                  # Created: EF5 configuration files
+    ├── Output/$gage_id/{crest,sac,hp}/ # Created: Model simulation results
+    └── states/$gage_id/{crest,sac,hp}/ # Created: Model state files
+
+=== COMMAND-LINE INTERFACE ===
+
+python multi_model_EF5_run.py \
+    --time-begin YYYYMMDDHHMMSS \      # Simulation start time
+    --time-end YYYYMMDDHHMMSS \        # Simulation end time  
+    --model {CREST,SAC,HP} \           # Hydrological model selection
+    --freq {1h,2u}                     # Time step (1h=hourly, 2u=2-minute)
+
+=== TECHNICAL DETAILS ===
+
+- Parallel Processing: Uses ThreadPoolExecutor for I/O-bound operations (API calls, file I/O) 
+  and ProcessPoolExecutor for CPU-bound operations (raster processing, model execution)
+- Coordinate Systems: Handles transformations between EPSG:4326 (WGS84) and EPSG:5070 
+  (Albers Equal Area Conic CONUS)
+- Unit Conversions: USGS streamflow from cubic feet per second (CFS) to cubic meters 
+  per second (CMS) using conversion factor 0.028316846592
+- Error Handling: Comprehensive try/catch with detailed error reporting and summary CSVs
+- Data Validation: Extensive checks for file existence, coordinate system validity, 
+  and data completeness at each workflow stage
+
+=== DOMAIN-SPECIFIC TERMINOLOGY ===
+
+- EF5: Ensemble Framework for Flash Flood Forecasting - a distributed hydrological model
+- CREST: Coupled Routing and Excess Storage model - rainfall-runoff model
+- SAC-SMA: Sacramento Soil Moisture Accounting model - conceptual rainfall-runoff model  
+- HP: Hydrologic Prediction model - simplified linear reservoir model
+- KW: Kinematic Wave routing - method for routing streamflow through channels
+- FAM/Flow Accumulation: Raster showing accumulated upstream drainage area for each cell
+- NLDI: National Linked Data Index - USGS service for watershed delineation
+- Basin Outlet: Point of maximum flow accumulation, used as the computational streamflow location
 """
 
 def delineate_basin_from_gage(gage_id, out_dir):
+    """
+    Delineate watershed basin boundary for a USGS stream gage using NLDI service.
+    
+    Retrieves gage metadata from USGS NWIS and uses the National Linked Data Index (NLDI)
+    to delineate the contributing drainage area. If basin files already exist, loads them
+    and calculates required basin properties.
+    
+    Parameters
+    ----------
+    gage_id : str or int
+        USGS stream gage site number (e.g., '01234567')
+    out_dir : str or Path
+        Directory to save basin boundary GeoJSON files
+        
+    Returns
+    -------
+    tuple
+        (basin_gdf, site_gdf, lat, lon, basin_area_sqkm, output_paths)
+        - basin_gdf: GeoDataFrame with basin polygon geometry
+        - site_gdf: GeoDataFrame with gage point geometry  
+        - lat, lon: Gage coordinates in decimal degrees (EPSG:4326)
+        - basin_area_sqkm: Basin drainage area in square kilometers
+        - output_paths: Dict with 'basin' and 'gage' file paths
+        
+    Raises
+    ------
+    ValueError
+        If USGS site metadata not found or NLDI returns empty basin
+    FileNotFoundError 
+        If existing basin/gage files are found but empty
+    """
     gage_id = str(gage_id).strip()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -61,6 +148,7 @@ def delineate_basin_from_gage(gage_id, out_dir):
     site_path = out_dir / f"{gage_id}_gage.geojson"
 
     # If files already exist, load them and calculate needed values
+    # This avoids redundant API calls and speeds up re-runs
     if basin_path.exists() and site_path.exists():
         basin_gdf = gpd.read_file(basin_path)
         site_gdf = gpd.read_file(site_path)
@@ -70,9 +158,12 @@ def delineate_basin_from_gage(gage_id, out_dir):
         if basin_gdf.empty:
             raise ValueError(f"Basin file exists but is empty: {basin_path}")
 
+        # Extract gage coordinates from point geometry
         lon = float(site_gdf.geometry.x.iloc[0])
         lat = float(site_gdf.geometry.y.iloc[0])
 
+        # Calculate basin area by reprojecting to equal-area coordinate system
+        # EPSG:5070 = Albers Equal Area Conic for CONUS, units in meters
         basin_area_sqkm = basin_gdf.to_crs("EPSG:5070").geometry.area.sum() / 1_000_000.0
 
         output_paths = {
@@ -82,11 +173,14 @@ def delineate_basin_from_gage(gage_id, out_dir):
 
         return basin_gdf, site_gdf, lat, lon, basin_area_sqkm, output_paths
 
-    # Pull site metadata from USGS
+    # Pull site metadata from USGS National Water Information System (NWIS)
+    # Returns DataFrame with station info including coordinates, drainage area, etc.
     site = nwis.get_info(sites=gage_id)[0]
     if site.empty:
         raise ValueError(f"No USGS site metadata found for gage {gage_id}")
 
+    # Extract decimal degree coordinates from NWIS metadata
+    # dec_lat_va/dec_long_va are standard NWIS column names
     lat = float(site.iloc[0]["dec_lat_va"])
     lon = float(site.iloc[0]["dec_long_va"])
 
@@ -96,13 +190,14 @@ def delineate_basin_from_gage(gage_id, out_dir):
         crs="EPSG:4326",
     )
 
-    # Delineate basin
+    # Delineate basin using National Linked Data Index (NLDI) service
+    # NLDI provides automated watershed delineation from USGS stream gage locations
     nldi = NLDI()
     basin_gdf = nldi.get_basins(
-        [gage_id],
-        fsource="nwissite",
-        split_catchment=False,
-        simplified=False,
+        [gage_id],                     # List of gage IDs to process
+        fsource="nwissite",            # Use NWIS sites as feature source
+        split_catchment=False,         # Return full upstream basin, not split catchments
+        simplified=False,              # Use high-resolution boundaries
     )
 
     if basin_gdf is None or basin_gdf.empty:
@@ -196,6 +291,29 @@ def delineate_basins_from_csv(max_workers=8):
     return results_df
 
 def clip_raster_to_basin(in_raster, basin_gdf, out_raster):
+    """
+    Clip a raster dataset to the extent of a basin boundary polygon.
+    
+    Uses rasterio.mask to extract raster cells that intersect the basin geometry,
+    setting all cells outside the basin to NoData. Preserves the original raster's
+    coordinate reference system, resolution, and data type.
+    
+    Parameters
+    ----------
+    in_raster : str or Path
+        Path to input raster file (e.g., DEM, flow direction, flow accumulation)
+    basin_gdf : GeoDataFrame
+        Basin boundary geometry, will be reprojected to match raster CRS if needed
+    out_raster : str or Path  
+        Path for output clipped raster file
+        
+    Raises
+    ------
+    ValueError
+        If no valid geometries found after reprojection to raster CRS
+    rasterio.errors.CRSError
+        If coordinate system transformation fails
+    """
     in_raster = Path(in_raster)
     out_raster = Path(out_raster)
     out_raster.parent.mkdir(parents=True, exist_ok=True)
@@ -300,9 +418,47 @@ def get_max_fam_cell_coords(flow_accumulation_raster):
     }
 
 def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accumulation_raster, dem_raster, output_dir):
+    """
+    Clip three core geospatial layers (DEM, flow direction, flow accumulation) for a single basin.
+    
+    This function processes one basin at a time and is designed to be called in parallel
+    using ProcessPoolExecutor. It clips the continental-scale raster datasets to the
+    basin boundary and identifies the outlet coordinates for streamflow computation.
+    
+    Parameters
+    ----------
+    basin_file : str or Path
+        Path to basin boundary GeoJSON file (e.g., '12345678_basin.geojson')
+    flow_direction_raster : str or Path
+        Path to continental flow direction raster (typically fdir_usa.tif)
+    flow_accumulation_raster : str or Path  
+        Path to continental flow accumulation raster (typically facc_usa.tif)
+    dem_raster : str or Path
+        Path to continental digital elevation model (typically dem_usa.tif)
+    output_dir : str or Path
+        Directory to save clipped raster files (typically BasicData/)
+        
+    Returns
+    -------
+    dict
+        Success result containing:
+        - gage_id: Extracted from basin filename
+        - status: 'success' or 'failed'
+        - basin_file: Path to source basin file
+        - flow_direction, flow_accumulation, dem: Paths to clipped rasters
+        - fam_value: Maximum flow accumulation value (basin outlet)
+        - snapped_longitude, snapped_latitude: Outlet coordinates in EPSG:4326
+        - fam_row, fam_col: Row/column indices of outlet in clipped raster
+        
+    Raises
+    ------
+    ValueError
+        If basin file is empty or lacks coordinate reference system
+    """
     basin_file = Path(basin_file)
     output_dir = Path(output_dir)
 
+    # Extract gage ID from basin filename (removes '_basin.geojson' suffix)
     gage_id = basin_file.stem.replace("_basin", "")
     basin_gdf = gpd.read_file(basin_file)
 
@@ -312,14 +468,19 @@ def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accum
     if basin_gdf.crs is None:
         raise ValueError(f"Basin file has no CRS: {basin_file}")
 
+    # Define output filenames with gage ID prefix for organization
     flow_dir_out = output_dir / f"{gage_id}_flow_direction.tif"
     flow_acc_out = output_dir / f"{gage_id}_flow_accumulation.tif"
     dem_out = output_dir / f"{gage_id}_dem.tif"
 
+    # Clip all three raster layers to the basin boundary
+    # These are the core geospatial inputs required by EF5 model
     clip_raster_to_basin(flow_direction_raster, basin_gdf, flow_dir_out)
-    clip_raster_to_basin(flow_accumulation_raster, basin_gdf, flow_acc_out)
+    clip_raster_to_basin(flow_accumulation_raster, basin_gdf, flow_acc_out)  
     clip_raster_to_basin(dem_raster, basin_gdf, dem_out)
 
+    # Find the basin outlet (point of maximum flow accumulation)
+    # This becomes the computational location for streamflow output
     fam_info = get_max_fam_cell_coords(flow_acc_out)
 
     return {
@@ -337,6 +498,32 @@ def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accum
     }
 
 def clip_main_layers_for_all_basins(max_workers=4):
+    """
+    Clip geospatial layers for all basins in parallel and merge results with basin summary.
+    
+    Orchestrates the clipping of continental-scale DEM, flow direction, and flow accumulation
+    rasters for all basins delineated in previous steps. Uses ProcessPoolExecutor for 
+    CPU-intensive raster operations. Updates the basin delineation summary with outlet 
+    coordinates needed for EF5 model configuration.
+    
+    Parameters
+    ----------
+    max_workers : int, default 4
+        Number of parallel processes for raster clipping operations
+        
+    Returns
+    -------
+    DataFrame
+        Updated basin delineation summary with additional columns:
+        - fam_value: Maximum flow accumulation at basin outlet
+        - snapped_longitude, snapped_latitude: Basin outlet coordinates
+        - fam_row, fam_col: Outlet position in clipped raster grid
+        
+    Raises
+    ------
+    FileNotFoundError
+        If no basin boundary files found or required input rasters missing
+    """
     project_root = Path.cwd()
 
     basin_dir = project_root / "data" / "basin_delineations"
@@ -418,27 +605,77 @@ def clip_main_layers_for_all_basins(max_workers=4):
 
     return results_df
 
+# Unit conversion constant: Cubic Feet per Second to Cubic Meters per Second
+# Derived from: 1 ft = 0.3048 m, so 1 ft³ = (0.3048 m)³ = 0.028316846592 m³
 CFS_TO_CMS = 0.028316846592
 
 
 def parse_ef5_time(value: str) -> datetime:
     """
-    Parse EF5-style datetime string: YYYYMMDDHHMMSS
+    Parse EF5-style datetime string to UTC datetime object.
+    
+    EF5 model uses YYYYMMDDHHMMSS format for temporal specifications.
+    All times are assumed to be UTC for consistency across the workflow.
+    
+    Parameters
+    ----------
+    value : str
+        Datetime string in format YYYYMMDDHHMMSS (e.g., '20230101000000')
+        
+    Returns
+    -------
+    datetime
+        UTC datetime object with timezone information
+        
+    Examples
+    --------
+    >>> parse_ef5_time('20230615123000')
+    datetime.datetime(2023, 6, 15, 12, 30, tzinfo=datetime.timezone.utc)
     """
     return datetime.strptime(str(value).strip(), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
 
 
 def fetch_usgs_iv(gage_id: str, start_utc: datetime, end_utc: datetime):
     """
-    Fetch USGS instantaneous discharge (parameter 00060) and convert from cfs to cms.
+    Fetch USGS instantaneous values (IV) streamflow data via web API.
+    
+    Downloads observed streamflow from USGS National Water Information System (NWIS)
+    Instantaneous Values web service. Retrieves discharge data (parameter code 00060)
+    and converts from cubic feet per second to cubic meters per second for EF5 compatibility.
+    
+    Parameters
+    ----------
+    gage_id : str
+        USGS stream gage site number (8-digit format, e.g., '01234567')
+    start_utc : datetime
+        Start time for data retrieval (UTC timezone aware)
+    end_utc : datetime
+        End time for data retrieval (UTC timezone aware)
+        
+    Returns
+    -------
+    list of tuple
+        List of (datetime, flow_cms) pairs sorted by timestamp
+        - datetime: UTC timestamp of observation
+        - flow_cms: Streamflow in cubic meters per second
+        
+    Notes
+    -----
+    - Uses USGS Water Services REST API: https://waterservices.usgs.gov/nwis/iv/
+    - Parameter code 00060 = Discharge, cubic feet per second
+    - Conversion factor: 1 CFS = 0.028316846592 CMS
+    - Skips missing values and invalid data points
+    - Returns empty list if no data available for the specified period
     """
+    # Build USGS IV API request parameters
+    # siteStatus='all' includes inactive sites that may have historical data
     params = {
         "format": "json",
         "sites": gage_id,
-        "parameterCd": "00060",
-        "startDT": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "parameterCd": "00060",    # Discharge parameter code
+        "startDT": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),  # ISO 8601 UTC format
         "endDT": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "siteStatus": "all",
+        "siteStatus": "all",      # Include both active and inactive sites
     }
     url = "https://waterservices.usgs.gov/nwis/iv/?" + urlencode(params)
 
@@ -453,33 +690,58 @@ def fetch_usgs_iv(gage_id: str, start_utc: datetime, end_utc: datetime):
     if not values:
         return []
 
+    # Parse individual data points and convert units
     points = []
     for row in values[0].get("value", []):
         dt_str = row.get("dateTime", "")
         val_str = row.get("value", "")
 
+        # Skip missing or invalid data points
         if not dt_str or val_str in ("", None):
             continue
 
+        # Parse ISO 8601 datetime string and convert to UTC
+        # Replace 'Z' suffix with UTC offset for proper timezone handling
         dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00")).astimezone(timezone.utc)
 
+        # Convert discharge value to float and handle parsing errors
         try:
             q_cfs = float(val_str)
         except ValueError:
-            continue
+            continue  # Skip non-numeric values
 
+        # Convert from cubic feet per second to cubic meters per second
         q_cms = q_cfs * CFS_TO_CMS
         points.append((dt, q_cms))
 
+    # Sort by timestamp and return chronologically ordered data
     points.sort(key=lambda x: x[0])
     return points
 
 
 def write_usgs_csv(rows, out_csv: Path):
     """
-    Write USGS streamflow rows to CSV.
-    Overwrites existing file every run.
+    Write USGS streamflow observations to EF5-compatible CSV format.
+    
+    Creates a standardized CSV file with UTC timestamps and flow values in CMS
+    for use as observed data in EF5 model validation and comparison.
+    
+    Parameters
+    ----------
+    rows : list of tuple
+        List of (datetime, flow_cms) pairs from USGS data processing
+    out_csv : Path
+        Output CSV file path (will create parent directories if needed)
+        
+    Notes
+    -----
+    - Always overwrites existing files to ensure clean data
+    - Uses standardized column headers: 'Date (UTC)', 'Q (cms)'
+    - Timestamps formatted as YYYY-MM-DD HH:MM:SS for EF5 compatibility
+    - Flow values formatted to 6 decimal places for precision
     """
+    # Write USGS streamflow rows to CSV.
+    # Overwrites existing file every run.
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
     with out_csv.open("w", newline="", encoding="utf-8") as f:
@@ -491,8 +753,37 @@ def write_usgs_csv(rows, out_csv: Path):
 
 def fetch_usgs_for_one_gage(gage_id: str, time_begin: str, time_end: str, out_dir: Path):
     """
-    Download USGS IV streamflow for one gage and write EF5-ready observation CSV.
+    Download and process USGS streamflow data for a single gage.
+    
+    Handles the complete pipeline for one gage: time parsing, API data retrieval,
+    temporal filtering, and CSV file generation. Designed for parallel execution
+    across multiple gages.
+    
+    Parameters
+    ----------
+    gage_id : str
+        USGS stream gage site identifier
+    time_begin : str
+        Start time in EF5 format (YYYYMMDDHHMMSS)
+    time_end : str  
+        End time in EF5 format (YYYYMMDDHHMMSS)
+    out_dir : Path
+        Directory for saving observation CSV files
+        
+    Returns
+    -------
+    dict
+        Processing result with status ('success' or 'failed'), gage_id,
+        and either output file path or error message
+        
+    Raises
+    ------
+    ValueError
+        If time_end <= time_begin or invalid datetime formats
+    RuntimeError
+        If no USGS data returned for the specified gage and time period
     """
+    # Download USGS IV streamflow for one gage and write EF5-ready observation CSV.
     gage_id = str(gage_id).strip()
     out_dir = Path(out_dir)
 
@@ -577,6 +868,34 @@ def fetch_usgs_for_all_gages(time_begin: str, time_end: str, max_workers=8):
     return results_df
 
 def ef5_datetime_to_control_time(value: str) -> str:
+    """
+    Convert EF5 datetime format to control file time format.
+    
+    EF5 control files use a slightly different datetime format than the main
+    workflow - they omit seconds and use YYYYMMDDHHMM instead of YYYYMMDDHHMMSS.
+    
+    Parameters
+    ----------
+    value : str
+        Input datetime string (YYYYMMDDHHMMSS or YYYYMMDDHHMM)
+        
+    Returns
+    -------
+    str
+        Control file compatible datetime string (YYYYMMDDHHMM)
+        
+    Raises
+    ------
+    ValueError
+        If input format doesn't match expected EF5 datetime patterns
+        
+    Examples
+    --------
+    >>> ef5_datetime_to_control_time('20230615123045')
+    '202306151230'
+    >>> ef5_datetime_to_control_time('202306151230')
+    '202306151230'
+    """
     value = str(value).strip()
 
     if len(value) == 14:
@@ -593,6 +912,34 @@ def ef5_datetime_to_control_time(value: str) -> str:
 
 
 def normalize_model_name(model_to_run: str) -> str:
+    """
+    Validate and normalize hydrological model name.
+    
+    Ensures model names are consistently formatted in uppercase and validates
+    against supported EF5 model types implemented in this workflow.
+    
+    Parameters
+    ----------
+    model_to_run : str
+        Model name (case-insensitive: 'crest', 'sac', 'hp')
+        
+    Returns
+    -------
+    str
+        Normalized uppercase model name ('CREST', 'SAC', or 'HP')
+        
+    Raises
+    ------
+    ValueError
+        If model name is not one of the supported options
+        
+    Notes
+    -----
+    Supported models:
+    - CREST: Coupled Routing and Excess Storage model
+    - SAC: Sacramento Soil Moisture Accounting model (SAC-SMA)
+    - HP: Hydrologic Prediction model (simplified)
+    """
     model = str(model_to_run).strip().upper()
 
     if model not in {"CREST", "SAC", "HP"}:
@@ -603,10 +950,33 @@ def normalize_model_name(model_to_run: str) -> str:
 
 def build_precip_block(freq: str) -> tuple[str, str]:
     """
-    Return:
-    - precip block text
-    - precip forcing name to use in task blocks
+    Generate EF5 precipitation forcing configuration block based on temporal frequency.
+    
+    Configures either 2-minute MRMS GRIB2 data or hourly QPE data depending on the
+    modeling time step. The precipitation forcing section tells EF5 where to find
+    rainfall inputs and how to interpret the file naming convention.
+    
+    Parameters
+    ---------- 
+    freq : str
+        Time frequency: '2u' for 2-minute, '1h' for hourly
+        
+    Returns
+    -------
+    tuple
+        (precip_block, precip_name) where:
+        - precip_block: Multi-line string with EF5 PrecipForcing section
+        - precip_name: Forcing name identifier for use in task configuration
+        
+    Notes
+    -----
+    - 2-minute data uses MRMS GRIB2 format from Forcings/Precipitation/2min/
+    - Hourly data uses compressed GRIB2 from Forcings/Precipitation/hourly/
+    - File naming patterns use EF5 datetime placeholders (YYYYMMDD-HHUU00)
     """
+    # Return:
+    # - precip block text
+    # - precip forcing name to use in task blocks
     freq = str(freq).strip()
 
     if freq == "2u":
@@ -641,15 +1011,71 @@ def build_control_file_text(
     freq: str,
     model_to_run: str,
 ) -> str:
+    """
+    Generate complete EF5 control file text with all required configuration sections.
+    
+    This is the most complex function in the workflow, generating a comprehensive EF5
+    control file that includes basic settings, forcing data paths, gauge definitions,
+    basin boundaries, parameter sets for multiple models (CREST, SAC-SMA, HP), routing
+    parameters, and task execution instructions.
+    
+    Parameters
+    ----------
+    gage_id : str
+        USGS stream gage identifier (8-digit format)
+    latitude : float
+        Gage latitude in decimal degrees (EPSG:4326) 
+    longitude : float
+        Gage longitude in decimal degrees (EPSG:4326)
+    basin_area_sqkm : float
+        Basin drainage area in square kilometers
+    time_begin : str
+        Simulation start time in EF5 format (YYYYMMDDHHMMSS)
+    time_end : str
+        Simulation end time in EF5 format (YYYYMMDDHHMMSS)  
+    freq : str
+        Time step frequency ('1h' for hourly, '2u' for 2-minute)
+    model_to_run : str
+        Hydrological model to execute ('CREST', 'SAC', or 'HP')
+        
+    Returns
+    -------
+    str
+        Complete multi-section EF5 control file text ready for file writing
+        
+    Notes
+    -----
+    The generated control file contains these major sections:
+    - [Basic]: Computational domain and outlet specifications
+    - [PrecipForcing]: Precipitation data source configuration
+    - [PETForcing]: Potential evapotranspiration data configuration  
+    - [Gauge]: Stream gage location and metadata
+    - [Basin]: Watershed boundary definition
+    - [ParamSet]: Model parameter grids for CREST, SAC-SMA, HP models
+    - [kwparamset]: Kinematic wave routing parameters
+    - [Task]: Model execution task for the specified model
+    - [Execute]: Task execution sequence
+    
+    The function supports three hydrological models:
+    - CREST: Coupled Routing and Excess Storage model
+    - SAC-SMA: Sacramento Soil Moisture Accounting model  
+    - HP: Hydrologic Prediction model (simplified)
+    
+    All parameter grids reference continental-scale datasets in data/EF5_US_Params/
+    """
     gage_id = str(gage_id).strip()
     model_to_run = normalize_model_name(model_to_run)
 
+    # Convert EF5 datetime format to control file format (drops seconds)
+    # EF5 control files use YYYYMMDDHHMM instead of YYYYMMDDHHMMSS
     time_begin_ctrl = ef5_datetime_to_control_time(time_begin)
     time_end_ctrl = ef5_datetime_to_control_time(time_end)
 
+    # Map model names to their corresponding task identifiers
+    # Each model gets a unique task name for execution targeting
     execute_task_lookup = {
         "CREST": f"Run{gage_id}crest",
-        "SAC": f"Run{gage_id}sac",
+        "SAC": f"Run{gage_id}sac", 
         "HP": f"Run{gage_id}hp",
     }
     execute_task = execute_task_lookup[model_to_run]
@@ -1315,12 +1741,115 @@ def run_full_ef5_setup(
     plot_workers: int = 4,
     create_plots: bool = True,
 ):
+    """
+    Execute the complete 6-step EF5 hydrological modeling workflow.
+    
+    This is the master orchestration function that sequences all workflow steps from
+    basin delineation through model execution to visualization. Each step processes
+    multiple stream gages in parallel and generates comprehensive summary reports.
+    
+    === WORKFLOW SEQUENCE ===
+    
+    Step 1: Basin Delineation
+        - Reads gage IDs from gages/gage_ids.csv
+        - Fetches USGS site metadata and coordinates
+        - Delineates watersheds using NLDI service
+        - Saves basin boundaries as GeoJSON files
+        - Creates basin_delineation_summary.csv
+        
+    Step 2: Raster Clipping 
+        - Clips continental DEM, flow direction, flow accumulation rasters
+        - Identifies basin outlet coordinates (max flow accumulation)
+        - Saves clipped rasters to BasicData/ directory
+        - Creates main_layer_clipping_summary.csv
+        
+    Step 3: USGS Data Download
+        - Downloads observed streamflow from USGS IV API
+        - Converts units from CFS to CMS
+        - Filters data to simulation time period
+        - Saves observations as CSV files in observations/
+        - Creates usgs_download_summary.csv
+        
+    Step 4: Control File Creation
+        - Merges basin, raster, and observation results
+        - Generates EF5 model configuration files
+        - Creates control_*.txt files with model parameters
+        - Creates control_files_summary.csv
+        
+    Step 5: EF5 Model Execution
+        - Runs EF5 executable subprocess for each control file
+        - Captures stdout/stderr logs for debugging
+        - Saves model outputs to Output/ and states/ directories
+        - Creates ef5_execution_summary.csv
+        
+    Step 6: Visualization (Optional)
+        - Creates interactive Plotly HTML plots
+        - Compares observed vs. modeled streamflow
+        - Generates plots only for successful model runs
+        - Creates plot_creation_summary.csv
+    
+    Parameters
+    ----------
+    time_begin : str
+        Simulation start time in EF5 format (YYYYMMDDHHMMSS)
+    time_end : str
+        Simulation end time in EF5 format (YYYYMMDDHHMMSS)
+    model_to_run : str
+        Hydrological model to execute ('CREST', 'SAC', or 'HP')
+    freq : str, default '1h'
+        Temporal resolution ('1h' for hourly, '2u' for 2-minute)
+    basin_workers : int, default 8
+        Thread pool size for basin delineation (I/O-bound USGS/NLDI API calls)
+    clip_workers : int, default 4
+        Process pool size for raster clipping (CPU-bound geospatial operations)
+    usgs_workers : int, default 8  
+        Thread pool size for USGS data downloads (I/O-bound HTTP requests)
+    control_workers : int, default 8
+        Thread pool size for control file generation (I/O-bound file writes)
+    ef5_workers : int, default 4
+        Process pool size for EF5 model execution (subprocess-bound)
+    plot_workers : int, default 4
+        Thread pool size for plot generation (I/O-bound file operations)
+    create_plots : bool, default True
+        Whether to generate interactive visualizations (requires Plotly)
+        
+    Returns
+    -------
+    dict
+        Comprehensive results summary containing DataFrames from all workflow steps:
+        - 'basin_results': Basin delineation outcomes
+        - 'clip_results': Raster clipping outcomes
+        - 'usgs_results': USGS data download outcomes
+        - 'control_results': Control file creation outcomes
+        - 'ef5_results': Model execution outcomes
+        - 'plot_results': Visualization creation outcomes (if enabled)
+        
+    Notes
+    -----
+    - Each step generates a summary CSV file for troubleshooting
+    - Worker counts can be tuned based on system resources and API rate limits
+    - Failed gages at any step are tracked but don't stop the overall workflow
+    - All coordinate transformations use EPSG:4326 (WGS84) for consistency
+    - Model outputs are organized by gage_id and model type for easy access
+    
+    Raises
+    ------
+    FileNotFoundError
+        If required input files (gages/gage_ids.csv, EF5 executable) are missing
+    ValueError
+        If time_begin >= time_end or invalid model/frequency specified
+    CalledProcessError
+        If EF5 executable fails (captured per-gage, not fatal to workflow)
+    """
+    # Step 1: Delineate watershed boundaries for all gages
     print("\n--- Step 1: Delineating basins ---")
     basin_results = delineate_basins_from_csv(max_workers=basin_workers)
 
+    # Step 2: Clip continental rasters to basin boundaries
     print("\n--- Step 2: Clipping main raster layers ---")
     clip_results = clip_main_layers_for_all_basins(max_workers=clip_workers)
 
+    # Step 3: Download observed streamflow data from USGS
     print("\n--- Step 3: Downloading USGS observations ---")
     usgs_results = fetch_usgs_for_all_gages(
         time_begin=time_begin,
@@ -1328,6 +1857,7 @@ def run_full_ef5_setup(
         max_workers=usgs_workers,
     )
 
+    # Step 4: Generate EF5 model configuration files
     print("\n--- Step 4: Creating control files ---")
     control_results = create_control_files_for_all_gages(
         time_begin=time_begin,
@@ -1337,10 +1867,11 @@ def run_full_ef5_setup(
         max_workers=control_workers,
     )
 
+    # Step 5: Execute EF5 hydrological model simulations
     print("\n--- Step 5: Running EF5 executable ---")
     ef5_results = run_ef5_for_all_controls(max_workers=ef5_workers)
 
-    # Step 6: Create interactive plots (if requested and successful runs exist)
+    # Step 6: Create interactive plots (conditional based on success and availability)
     plot_results = pd.DataFrame()
     if create_plots and PLOTLY_AVAILABLE:
         print("\n--- Step 6: Creating interactive Plotly plots ---")
