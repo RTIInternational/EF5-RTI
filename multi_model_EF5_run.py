@@ -3,17 +3,17 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 from urllib.parse import urlencode
 from urllib.request import urlopen
+from functools import lru_cache
 
 import argparse
 import csv
 import json
 import subprocess
+import re
 
 import geopandas as gpd
 import pandas as pd
 import rasterio
-import dataretrieval.nwis as nwis
-from pynhd import NLDI
 from rasterio.mask import mask
 
 """
@@ -32,8 +32,8 @@ in parallel, supporting three hydrological models: CREST, SAC-SMA, and HP.
            │                         │                         │
            ▼                         ▼                         ▼
     Read gages/gage_ids.csv    Clip DEM, flow dir,      Download observed
-    → USGS site metadata       flow accumulation        streamflow from
-    → NLDI basin boundaries    → Find max FAM coords    USGS Instantaneous
+    → Load pre-computed        flow accumulation        streamflow from
+    → basin parquet files      → Find max FAM coords    USGS Instantaneous
     → Save GeoJSON files       → Save to BasicData/     Values (IV) API
     
     ┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
@@ -108,47 +108,89 @@ except ImportError:
     print("Warning: Plotly not available. Plots will be skipped.")
     PLOTLY_AVAILABLE = False
 
+def normalize_gage_id(value):
+    """
+    Normalize gage IDs by removing 'usgs-' prefix to match gage_ids.csv format.
+    
+    Parameters
+    ----------
+    value : str or int
+        Gage ID with or without 'usgs-' prefix
+        
+    Returns
+    -------
+    str
+        Normalized gage ID (numeric portion only)
+    """
+    if pd.isna(value):
+        return pd.NA
+    s = str(value).strip()
+    s = re.sub(r"(?i)^usgs-", "", s)
+    return s
+
+
+@lru_cache(maxsize=1)
+def load_basin_lookup_data():
+    """
+    Load and cache basin parquet file for fast lookups.
+    
+    Returns
+    -------
+    GeoDataFrame
+        Basin geodataframe with polygon geometries and area_km2 attribute
+    """
+    project_root = Path.cwd()
+    
+    basin_path = project_root / "data" / "basin_delineations" / "flash_flood_protocol_basins.parquet"
+    
+    if not basin_path.exists():
+        raise FileNotFoundError(f"Basin parquet not found: {basin_path}")
+    
+    basin_gdf = gpd.read_parquet(basin_path)
+    
+    return basin_gdf
+
+
 def delineate_basin_from_gage(gage_id, out_dir):
     """
-    Delineate watershed basin boundary for a USGS stream gage using NLDI service.
+    Load watershed basin boundary from pre-computed GeoParquet file.
     
-    Retrieves gage metadata from USGS NWIS and uses the National Linked Data Index (NLDI)
-    to delineate the contributing drainage area. If basin files already exist, loads them
-    and calculates required basin properties.
+    Uses flash_flood_protocol_basins.parquet as the basin geometry source,
+    avoiding the need for NLDI API calls. Basin area is extracted from the
+    area_km2 column in the parquet file.
     
     Parameters
     ----------
     gage_id : str or int
-        USGS stream gage site number (e.g., '01234567')
+        USGS stream gage site number (e.g., '01234567' or 'usgs-01234567')
     out_dir : str or Path
         Directory to save basin boundary GeoJSON files
         
     Returns
     -------
     tuple
-        (basin_gdf, site_gdf, lat, lon, basin_area_sqkm, output_paths)
+        (basin_gdf, site_gdf, basin_area_sqkm, output_paths)
         - basin_gdf: GeoDataFrame with basin polygon geometry
         - site_gdf: GeoDataFrame with gage point geometry  
-        - lat, lon: Gage coordinates in decimal degrees (EPSG:4326)
         - basin_area_sqkm: Basin drainage area in square kilometers
         - output_paths: Dict with 'basin' and 'gage' file paths
         
     Raises
     ------
     ValueError
-        If USGS site metadata not found or NLDI returns empty basin
+        If basin not found in parquet or basin geometry is invalid
     FileNotFoundError 
         If existing basin/gage files are found but empty
     """
     gage_id = str(gage_id).strip()
+    gage_id_normalized = normalize_gage_id(gage_id)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    basin_path = out_dir / f"{gage_id}_basin.geojson"
-    site_path = out_dir / f"{gage_id}_gage.geojson"
+    basin_path = out_dir / f"{gage_id_normalized}_basin.geojson"
+    site_path = out_dir / f"{gage_id_normalized}_gage.geojson"
 
-    # If files already exist, load them and calculate needed values
-    # This avoids redundant API calls and speeds up re-runs
+    # If files already exist, load them and extract needed values
     if basin_path.exists() and site_path.exists():
         basin_gdf = gpd.read_file(basin_path)
         site_gdf = gpd.read_file(site_path)
@@ -162,51 +204,48 @@ def delineate_basin_from_gage(gage_id, out_dir):
         lon = float(site_gdf.geometry.x.iloc[0])
         lat = float(site_gdf.geometry.y.iloc[0])
 
-        # Calculate basin area by reprojecting to equal-area coordinate system
-        # EPSG:5070 = Albers Equal Area Conic for CONUS, units in meters
-        basin_area_sqkm = basin_gdf.to_crs("EPSG:5070").geometry.area.sum() / 1_000_000.0
+        # Try to get area_km2 attribute if available, otherwise calculate
+        if "area_km2" in basin_gdf.columns:
+            basin_area_sqkm = float(basin_gdf["area_km2"].iloc[0])
+        else:
+            basin_area_sqkm = basin_gdf.to_crs("EPSG:5070").geometry.area.sum() / 1_000_000.0
 
         output_paths = {
             "basin": basin_path,
             "gage": site_path,
         }
 
-        return basin_gdf, site_gdf, lat, lon, basin_area_sqkm, output_paths
+        return basin_gdf, site_gdf, basin_area_sqkm, output_paths
 
-    # Pull site metadata from USGS National Water Information System (NWIS)
-    # Returns DataFrame with station info including coordinates, drainage area, etc.
-    site = nwis.get_info(sites=gage_id)[0]
-    if site.empty:
-        raise ValueError(f"No USGS site metadata found for gage {gage_id}")
-
-    # Extract decimal degree coordinates from NWIS metadata
-    # dec_lat_va/dec_long_va are standard NWIS column names
-    lat = float(site.iloc[0]["dec_lat_va"])
-    lon = float(site.iloc[0]["dec_long_va"])
-
+    # Load cached basin parquet
+    basin_gdf_full = load_basin_lookup_data()
+    
+    # Search for basin by normalized gage ID
+    basin_gdf_full["id_normalized"] = basin_gdf_full["id"].map(normalize_gage_id)
+    matching_basins = basin_gdf_full[basin_gdf_full["id_normalized"] == gage_id_normalized]
+    
+    if matching_basins.empty:
+        raise ValueError(f"No basin found in parquet for gage {gage_id} (normalized: {gage_id_normalized})")
+    
+    # Take the first match
+    basin_row = matching_basins.iloc[0]
+    basin_gdf = gpd.GeoDataFrame([basin_row], crs=matching_basins.crs)
+    
+    # Extract area from parquet's area_km2 column
+    if "area_km2" in basin_gdf.columns and pd.notna(basin_gdf["area_km2"].iloc[0]):
+        basin_area_sqkm = float(basin_gdf["area_km2"].iloc[0])
+    else:
+        # Fallback: calculate area from geometry
+        basin_area_sqkm = basin_gdf.to_crs("EPSG:5070").geometry.area.sum() / 1_000_000.0
+    
+    # Create gage point geometry (placeholder, real coordinates from FAM later)
     site_gdf = gpd.GeoDataFrame(
-        site.copy(),
-        geometry=gpd.points_from_xy([lon], [lat]),
+        [{"gage_id": gage_id_normalized}],
+        geometry=gpd.points_from_xy([0.0], [0.0]),
         crs="EPSG:4326",
     )
-
-    # Delineate basin using National Linked Data Index (NLDI) service
-    # NLDI provides automated watershed delineation from USGS stream gage locations
-    nldi = NLDI()
-    basin_gdf = nldi.get_basins(
-        [gage_id],                     # List of gage IDs to process
-        fsource="nwissite",            # Use NWIS sites as feature source
-        split_catchment=False,         # Return full upstream basin, not split catchments
-        simplified=False,              # Use high-resolution boundaries
-    )
-
-    if basin_gdf is None or basin_gdf.empty:
-        raise ValueError(f"NLDI did not return a basin for gage {gage_id}")
-
-    # Calculate basin area in square kilometers
-    basin_area_sqkm = basin_gdf.to_crs("EPSG:5070").geometry.area.sum() / 1_000_000.0
-
-    # Save outputs
+    
+    # Save outputs as GeoJSON for downstream compatibility
     basin_gdf.to_file(basin_path, driver="GeoJSON")
     site_gdf.to_file(site_path, driver="GeoJSON")
 
@@ -215,14 +254,14 @@ def delineate_basin_from_gage(gage_id, out_dir):
         "gage": site_path,
     }
 
-    return basin_gdf, site_gdf, lat, lon, basin_area_sqkm, output_paths
+    return basin_gdf, site_gdf, basin_area_sqkm, output_paths
 
 
 def _process_one_gage(gage_id, out_dir):
     gage_id = str(gage_id).strip()
 
     try:
-        _, _, lat, lon, basin_area_sqkm, output_paths = delineate_basin_from_gage(
+        _, _, basin_area_sqkm, output_paths = delineate_basin_from_gage(
             gage_id=gage_id,
             out_dir=out_dir,
         )
@@ -230,8 +269,6 @@ def _process_one_gage(gage_id, out_dir):
         return {
             "gage_id": gage_id,
             "status": "success",
-            "latitude": lat,
-            "longitude": lon,
             "basin_area_sqkm": basin_area_sqkm,
             "basin_path": str(output_paths["basin"]),
             "gage_path": str(output_paths["gage"]),
@@ -284,8 +321,6 @@ def delineate_basins_from_csv(max_workers=8, skip_gages=None):
             if result["status"] == "success":
                 print(
                     f"Done: {result['gage_id']} | "
-                    f"lat={result['latitude']:.6f}, "
-                    f"lon={result['longitude']:.6f}, "
                     f"area={result['basin_area_sqkm']:.3f} km^2"
                 )
             else:
@@ -1004,7 +1039,7 @@ NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.grib2
 TYPE=GRIB2
 UNIT=mm/h
 FREQ={freq}
-LOC=Forcings/Precipitation/hourly
+LOC=Forcings/Precipitation/hourly/CONUS
 NAME=RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz
 """
 
