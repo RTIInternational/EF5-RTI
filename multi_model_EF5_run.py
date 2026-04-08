@@ -1338,7 +1338,8 @@ def create_control_files_for_all_gages(
 
     gage_csv = project_root / "gages" / "gage_ids.csv"
     summary_csv = project_root / "data" / "basin_delineations" / "basin_delineation_summary.csv"
-    out_dir = project_root
+    out_dir = project_root / "Control_Files"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if not gage_csv.exists():
         raise FileNotFoundError(f"Gage CSV not found: {gage_csv}")
@@ -1403,12 +1404,12 @@ def create_control_files_for_all_gages(
                 print(f"Failed: {gage_id} -> {result['error']}")
 
     results_df = pd.DataFrame(results).sort_values("gage_id")
-    results_df.to_csv(project_root / "control_file_creation_summary.csv", index=False)
+    results_df.to_csv(out_dir / "control_file_creation_summary.csv", index=False)
 
     return results_df
-def run_ef5_for_one_control(control_file: Path):
+def run_ef5_for_one_control(control_file: Path, project_root: Path):
     control_file = Path(control_file)
-    project_root = control_file.parent
+    project_root = Path(project_root)
     ef5_exe = project_root / "ef5"
 
     if not control_file.exists():
@@ -1426,12 +1427,13 @@ def run_ef5_for_one_control(control_file: Path):
         }
 
     gage_id = control_file.stem.replace("control_", "")
-    log_file = project_root / f"ef5_run_{gage_id}.log"
+    log_file = control_file.parent / f"ef5_run_{gage_id}.log"
 
     try:
         with log_file.open("w", encoding="utf-8") as log:
+            control_arg = str(control_file.relative_to(project_root))
             result = subprocess.run(
-                ["./ef5", control_file.name],
+                ["./ef5", control_arg],
                 cwd=str(project_root),
                 stdout=log,
                 stderr=subprocess.STDOUT,
@@ -1468,7 +1470,8 @@ def run_ef5_for_one_control(control_file: Path):
 
 def run_ef5_for_all_controls(max_workers: int = 4, skip_gages=None):
     project_root = Path.cwd()
-    control_files = sorted(project_root.glob("control_*.txt"))
+    control_files_dir = project_root / "Control_Files"
+    control_files = sorted(control_files_dir.glob("control_*.txt"))
 
     # Filter out control files for gages that should be skipped
     if skip_gages:
@@ -1478,7 +1481,7 @@ def run_ef5_for_all_controls(max_workers: int = 4, skip_gages=None):
         ]
 
     if not control_files:
-        raise FileNotFoundError(f"No control files found in {project_root}")
+        raise FileNotFoundError(f"No control files found in {control_files_dir}")
 
     ef5_exe = project_root / "ef5"
     if not ef5_exe.exists():
@@ -1488,7 +1491,7 @@ def run_ef5_for_all_controls(max_workers: int = 4, skip_gages=None):
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         future_to_control = {
-            executor.submit(run_ef5_for_one_control, control_file): control_file
+            executor.submit(run_ef5_for_one_control, control_file, project_root): control_file
             for control_file in control_files
         }
 
@@ -1513,7 +1516,8 @@ def run_ef5_for_all_controls(max_workers: int = 4, skip_gages=None):
                 print(f"Failed: {control_file.name} -> {e}")
 
     results_df = pd.DataFrame(results).sort_values("control_file")
-    results_df.to_csv(project_root / "ef5_execution_summary.csv", index=False)
+    control_files_dir = project_root / "Control_Files"
+    results_df.to_csv(control_files_dir / "ef5_execution_summary.csv", index=False)
 
     return results_df
 
