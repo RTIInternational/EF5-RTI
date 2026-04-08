@@ -69,10 +69,10 @@ in parallel, supporting three hydrological models: CREST, SAC-SMA, and HP.
 
 === COMMAND-LINE INTERFACE ===
 
-python multi_model_EF5_run.py \
-    --time-begin YYYYMMDDHHMMSS \      # Simulation start time
-    --time-end YYYYMMDDHHMMSS \        # Simulation end time  
-    --model {CREST,SAC,HP} \           # Hydrological model selection
+python multi_model_EF5_run.py
+    --time-begin YYYYMMDDHHMMSS         # Simulation start time
+    --time-end YYYYMMDDHHMMSS           # Simulation end time
+    --model {CREST,SAC,HP}              # Hydrological model selection
     --freq {1h,2u}                     # Time step (1h=hourly, 2u=2-minute)
 
 === TECHNICAL DETAILS ===
@@ -1769,6 +1769,44 @@ def find_gages_with_output():
     return {gage_dir.name for gage_dir in output_dir.iterdir() if gage_dir.is_dir()}
 
 
+def ensure_required_directories(project_root: Path):
+    """
+    Create the directory structure required by this workflow.
+
+    This only creates folders and does not create any input files.
+    """
+    project_root = Path(project_root)
+
+    required_dirs = [
+        project_root / "Control_Files",
+        project_root / "gages",
+        project_root / "data",
+        project_root / "data" / "basin_delineations",
+        project_root / "data" / "EF5_US_Params",
+        project_root / "data" / "EF5_US_Params" / "basic",
+        project_root / "data" / "EF5_US_Params" / "crest_params",
+        project_root / "data" / "EF5_US_Params" / "sac_params",
+        project_root / "data" / "EF5_US_Params" / "kw_params",
+        project_root / "Forcings",
+        project_root / "Forcings" / "Precipitation",
+        project_root / "Forcings" / "Precipitation" / "2min",
+        project_root / "Forcings" / "Precipitation" / "hourly",
+        project_root / "Forcings" / "PET",
+        project_root / "BasicData",
+        project_root / "observations",
+        project_root / "Output",
+        project_root / "states",
+    ]
+
+    created_count = 0
+    for directory in required_dirs:
+        if not directory.exists():
+            created_count += 1
+        directory.mkdir(parents=True, exist_ok=True)
+
+    print(f"Directory setup complete. Ensured {len(required_dirs)} folders ({created_count} newly created).")
+
+
 def run_full_ef5_setup(
     time_begin: str,
     time_end: str,
@@ -1882,6 +1920,9 @@ def run_full_ef5_setup(
     CalledProcessError
         If EF5 executable fails (captured per-gage, not fatal to workflow)
     """
+    project_root = Path.cwd()
+    ensure_required_directories(project_root)
+
     # Identify gages with existing outputs and skip them
     skip_gages = find_gages_with_output()
     if skip_gages:
