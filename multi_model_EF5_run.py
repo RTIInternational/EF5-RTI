@@ -245,7 +245,7 @@ def _process_one_gage(gage_id, out_dir):
         }
 
 
-def delineate_basins_from_csv(max_workers=8):
+def delineate_basins_from_csv(max_workers=8, skip_gages=None):
     project_root = Path.cwd()
     gage_csv = project_root / "gages" / "gage_ids.csv"
     out_dir = project_root / "data" / "basin_delineations"
@@ -263,6 +263,12 @@ def delineate_basins_from_csv(max_workers=8):
         )
 
     gage_ids = [str(g).strip() for g in gages_df["gage_id"].dropna().tolist()]
+    
+    # Filter out gages that should be skipped
+    if skip_gages:
+        gage_ids = [g for g in gage_ids if g not in skip_gages]
+        if gage_ids:
+            print(f"Skipping {len(skip_gages)} gage(s) with existing output. Processing {len(gage_ids)} gage(s).")
     results = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -810,7 +816,7 @@ def fetch_usgs_for_one_gage(gage_id: str, time_begin: str, time_end: str, out_di
     }
 
 
-def fetch_usgs_for_all_gages(time_begin: str, time_end: str, max_workers=8):
+def fetch_usgs_for_all_gages(time_begin: str, time_end: str, max_workers=8, skip_gages=None):
     """
     Read gage IDs from gages/gage_ids.csv and download USGS IV streamflow
     for all gages in parallel for the specified EF5-style UTC datetime range.
@@ -832,6 +838,10 @@ def fetch_usgs_for_all_gages(time_begin: str, time_end: str, max_workers=8):
         )
 
     gage_ids = [str(g).strip() for g in gages_df["gage_id"].dropna().tolist()]
+    
+    # Filter out gages that should be skipped
+    if skip_gages:
+        gage_ids = [g for g in gage_ids if g not in skip_gages]
     results = []
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1322,6 +1332,7 @@ def create_control_files_for_all_gages(
     model_to_run: str,
     freq: str = "1h",
     max_workers: int = 8,
+    skip_gages=None,
 ):
     project_root = Path.cwd()
 
@@ -1337,6 +1348,10 @@ def create_control_files_for_all_gages(
 
     gages_df = pd.read_csv(gage_csv, dtype={"gage_id": str})
     summary_df = pd.read_csv(summary_csv, dtype={"gage_id": str})
+    
+    # Filter out gages that should be skipped
+    if skip_gages:
+        gages_df = gages_df[~gages_df["gage_id"].isin(skip_gages)]
 
     if "gage_id" not in gages_df.columns:
         raise ValueError(
@@ -1451,9 +1466,16 @@ def run_ef5_for_one_control(control_file: Path):
         }
 
 
-def run_ef5_for_all_controls(max_workers: int = 4):
+def run_ef5_for_all_controls(max_workers: int = 4, skip_gages=None):
     project_root = Path.cwd()
     control_files = sorted(project_root.glob("control_*.txt"))
+
+    # Filter out control files for gages that should be skipped
+    if skip_gages:
+        control_files = [
+            cf for cf in control_files 
+            if not any(gage_id in cf.name for gage_id in skip_gages)
+        ]
 
     if not control_files:
         raise FileNotFoundError(f"No control files found in {project_root}")
@@ -1728,6 +1750,21 @@ def create_plots_for_all_successful_runs(
     
     return results_df
 
+def find_gages_with_output():
+    """
+    Identify USGS gage IDs that already have Output/ directories.
+    
+    Returns a set of gage IDs that should be skipped to avoid re-processing.
+    """
+    project_root = Path.cwd()
+    output_dir = project_root / "Output"
+    
+    if not output_dir.exists():
+        return set()
+    
+    return {gage_dir.name for gage_dir in output_dir.iterdir() if gage_dir.is_dir()}
+
+
 def run_full_ef5_setup(
     time_begin: str,
     time_end: str,
@@ -1841,9 +1878,15 @@ def run_full_ef5_setup(
     CalledProcessError
         If EF5 executable fails (captured per-gage, not fatal to workflow)
     """
+    # Identify gages with existing outputs and skip them
+    skip_gages = find_gages_with_output()
+    if skip_gages:
+        print(f"Found existing outputs for {len(skip_gages)} gage(s): {sorted(skip_gages)}")
+        print("These gages will be skipped.\n")
+    
     # Step 1: Delineate watershed boundaries for all gages
     print("\n--- Step 1: Delineating basins ---")
-    basin_results = delineate_basins_from_csv(max_workers=basin_workers)
+    basin_results = delineate_basins_from_csv(max_workers=basin_workers, skip_gages=skip_gages)
 
     # Step 2: Clip continental rasters to basin boundaries
     print("\n--- Step 2: Clipping main raster layers ---")
@@ -1855,6 +1898,7 @@ def run_full_ef5_setup(
         time_begin=time_begin,
         time_end=time_end,
         max_workers=usgs_workers,
+        skip_gages=skip_gages,
     )
 
     # Step 4: Generate EF5 model configuration files
@@ -1865,11 +1909,12 @@ def run_full_ef5_setup(
         model_to_run=model_to_run,
         freq=freq,
         max_workers=control_workers,
+        skip_gages=skip_gages,
     )
 
     # Step 5: Execute EF5 hydrological model simulations
     print("\n--- Step 5: Running EF5 executable ---")
-    ef5_results = run_ef5_for_all_controls(max_workers=ef5_workers)
+    ef5_results = run_ef5_for_all_controls(max_workers=ef5_workers, skip_gages=skip_gages)
 
     # Step 6: Create interactive plots (conditional based on success and availability)
     plot_results = pd.DataFrame()
