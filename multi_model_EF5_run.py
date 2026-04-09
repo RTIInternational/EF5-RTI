@@ -50,20 +50,26 @@ in parallel, supporting three hydrological models: CREST, SAC-SMA, and HP.
 === EXPECTED PROJECT STRUCTURE ===
 
     project_root/
-    ├── gages/gage_ids.csv              # Input: List of USGS gage IDs
-    ├── data/EF5_US_Params/             # Input: Model parameter grids
+    ├── gages/gage_ids.csv              # Input: List of USGS gage IDs (must include 'state' column)
+    ├── data/EF5_US_Params/             # Input: CONUS model parameter grids
     │   ├── basic/{dem,fdir,facc}_usa.tif
     │   ├── crest_params/*.tif
     │   ├── sac_params/*.tif
     │   └── kw_params/*.tif
+    ├── data/EF5-oCONUS-Parameters/     # Input: Regional (AK/HI/PR) parameter grids
+    │   ├── basic/{ak,hi,carib}_{dem,fdir,facc}_*.tif
+    │   ├── parameters/{CREST,KW}/*.tif
+    │   └── pet/FAO.PET.MM.tif
     ├── Forcings/                       # Input: Precipitation and PET data
-    │   ├── Precipitation/{2min,hourly}/
+    │   ├── Precipitation/
+    │   │   ├── 2min/{CONUS,AK,HI,PR}/ # 2-minute MRMS data (regional)
+    │   │   └── hourly/{CONUS,AK,HI,PR}/ # Hourly QPE data (regional)
     │   └── PET/
     ├── ef5                            # Input: EF5 executable
     ├── data/basin_delineations/       # Created: Basin boundary files
-    ├── BasicData/                     # Created: Clipped rasters
+    ├── BasicData/                     # Created: Clipped rasters (region-specific)
     ├── observations/                  # Created: USGS streamflow CSVs
-    ├── control_*.txt                  # Created: EF5 configuration files
+    ├── Control_Files/control_*.txt    # Created: EF5 configuration files
     ├── Output/$gage_id/{crest,sac,hp}/ # Created: Model simulation results
     └── states/$gage_id/{crest,sac,hp}/ # Created: Model state files
 
@@ -95,7 +101,6 @@ python multi_model_EF5_run.py
 - HP: Hydrologic Prediction model - simplified linear reservoir model
 - KW: Kinematic Wave routing - method for routing streamflow through channels
 - FAM/Flow Accumulation: Raster showing accumulated upstream drainage area for each cell
-- NLDI: National Linked Data Index - USGS service for watershed delineation
 - Basin Outlet: Point of maximum flow accumulation, used as the computational streamflow location
 """
 
@@ -129,6 +134,122 @@ def normalize_gage_id(value):
     return s
 
 
+REGION_BY_STATE = {
+    "AK": "ALASKA",
+    "HI": "HAWAII",
+    "PR": "PUERTO_RICO",
+}
+
+
+def normalize_state_code(value) -> str:
+    if pd.isna(value):
+        return ""
+    return str(value).strip().upper()
+
+
+def get_region_from_state(state_code) -> str:
+    return REGION_BY_STATE.get(normalize_state_code(state_code), "CONUS")
+
+
+def get_basic_rasters_for_region(project_root: Path, region: str):
+    project_root = Path(project_root)
+    region = str(region).strip().upper()
+
+    if region == "ALASKA":
+        base = project_root / "data" / "EF5-oCONUS-Parameters" / "basic"
+        return (
+            base / "ak_fdir_030218.tif",
+            base / "ak_facc_030218.tif",
+            base / "ak_dem_030218.tif",
+        )
+
+    if region == "HAWAII":
+        base = project_root / "data" / "EF5-oCONUS-Parameters" / "basic"
+        return (
+            base / "hi_fdir_041818.tif",
+            base / "hi_facc_041818.tif",
+            base / "hi_dem_041818.tif",
+        )
+
+    if region == "PUERTO_RICO":
+        base = project_root / "data" / "EF5-oCONUS-Parameters" / "basic"
+        return (
+            base / "carib_fdir_102016.tif",
+            base / "carib_facc_102016.tif",
+            base / "carib_dem_102016.tif",
+        )
+
+    base = project_root / "data" / "EF5_US_Params" / "basic"
+    return (
+        base / "fdir_usa.tif",
+        base / "facc_usa.tif",
+        base / "dem_usa.tif",
+    )
+
+
+def get_region_parameter_config(region: str) -> dict:
+    region = str(region).strip().upper()
+
+    if region == "ALASKA":
+        return {
+            "pet_loc": "data/EF5-oCONUS-Parameters/pet/",
+            "pet_name": "FAO.PET.MM.tif",
+            "crest_wm": "data/EF5-oCONUS-Parameters/parameters/CREST/wm_alaska_20190308c.tif",
+            "crest_b": "data/EF5-oCONUS-Parameters/parameters/CREST/b_alaska_20190308c.tif",
+            "crest_im": "data/EF5-oCONUS-Parameters/parameters/CREST/im_alaska_20190308c.tif",
+            "crest_fc": "data/EF5-oCONUS-Parameters/parameters/CREST/ksat_alaska_20190308c.tif",
+            "kw_under_grid": "",
+            "kw_leaki_grid": "",
+            "kw_alpha": "data/EF5-oCONUS-Parameters/parameters/KW/alpha_alaska_20190308c.tif",
+            "kw_beta": "data/EF5-oCONUS-Parameters/parameters/KW/beta_alaska_20190308c.tif",
+            "kw_alpha0": "data/EF5-oCONUS-Parameters/parameters/KW/alpha0_alaska_20190308c.tif",
+        }
+
+    if region == "HAWAII":
+        return {
+            "pet_loc": "data/EF5-oCONUS-Parameters/pet/",
+            "pet_name": "FAO.PET.MM.tif",
+            "crest_wm": "data/EF5-oCONUS-Parameters/parameters/CREST/wm_hawaii_20190304c.tif",
+            "crest_b": "data/EF5-oCONUS-Parameters/parameters/CREST/b_hawaii_20190304c.tif",
+            "crest_im": "data/EF5-oCONUS-Parameters/parameters/CREST/im_hawaii_20190304c.tif",
+            "crest_fc": "data/EF5-oCONUS-Parameters/parameters/CREST/ksat_hawaii_20190304c.tif",
+            "kw_under_grid": "",
+            "kw_leaki_grid": "",
+            "kw_alpha": "data/EF5-oCONUS-Parameters/parameters/KW/alpha_hawaii_20190304c.tif",
+            "kw_beta": "data/EF5-oCONUS-Parameters/parameters/KW/beta_hawaii_20190304c.tif",
+            "kw_alpha0": "data/EF5-oCONUS-Parameters/parameters/KW/alpha0_hawaii_20190304c.tif",
+        }
+
+    if region == "PUERTO_RICO":
+        return {
+            "pet_loc": "data/EF5-oCONUS-Parameters/pet/",
+            "pet_name": "FAO.PET.MM.tif",
+            "crest_wm": "data/EF5-oCONUS-Parameters/parameters/CREST/wm_carib_20190328c.tif",
+            "crest_b": "data/EF5-oCONUS-Parameters/parameters/CREST/b_carib_20190328c.tif",
+            "crest_im": "data/EF5-oCONUS-Parameters/parameters/CREST/im_carib_20190328c.tif",
+            "crest_fc": "data/EF5-oCONUS-Parameters/parameters/CREST/ksat_carib_20190328c.tif",
+            "kw_under_grid": "",
+            "kw_leaki_grid": "",
+            "kw_alpha": "data/EF5-oCONUS-Parameters/parameters/KW/alpha_carib_20190328c.tif",
+            "kw_beta": "data/EF5-oCONUS-Parameters/parameters/KW/beta_carib_20190328c.tif",
+            "kw_alpha0": "data/EF5-oCONUS-Parameters/parameters/KW/alpha0_carib_20190328c.tif",
+        }
+
+    return {
+        "pet_loc": "Forcings/PET/",
+        "pet_name": "PET_MM_usa.tif",
+        "crest_wm": "data/EF5_US_Params/crest_params/wm_usa.tif",
+        "crest_b": "data/EF5_US_Params/crest_params/b_usa.tif",
+        "crest_im": "data/EF5_US_Params/crest_params/im_usa.tif",
+        "crest_fc": "data/EF5_US_Params/crest_params/ksat_usa.tif",
+        "kw_under_grid": "data/EF5_US_Params/kw_params/ksat_usa.tif",
+        "kw_leaki_grid": "data/EF5_US_Params/kw_params/leaki_usa.tif",
+        "kw_alpha": "data/EF5_US_Params/kw_params/alpha_usa.tif",
+        "kw_beta": "data/EF5_US_Params/kw_params/beta_usa.tif",
+        "kw_alpha0": "data/EF5_US_Params/kw_params/alpha0_usa.tif",
+    }
+
+
 @lru_cache(maxsize=1)
 def load_basin_lookup_data():
     """
@@ -156,7 +277,7 @@ def delineate_basin_from_gage(gage_id, out_dir):
     Load watershed basin boundary from pre-computed GeoParquet file.
     
     Uses flash_flood_protocol_basins.parquet as the basin geometry source,
-    avoiding the need for NLDI API calls. Basin area is extracted from the
+    avoiding external basin delineation API calls. Basin area is extracted from the
     area_km2 column in the parquet file.
     
     Parameters
@@ -179,7 +300,6 @@ def delineate_basin_from_gage(gage_id, out_dir):
     ------
     ValueError
         If basin not found in parquet or basin geometry is invalid
-    FileNotFoundError 
         If existing basin/gage files are found but empty
     """
     gage_id = str(gage_id).strip()
@@ -221,8 +341,10 @@ def delineate_basin_from_gage(gage_id, out_dir):
     basin_gdf_full = load_basin_lookup_data()
     
     # Search for basin by normalized gage ID
-    basin_gdf_full["id_normalized"] = basin_gdf_full["id"].map(normalize_gage_id)
-    matching_basins = basin_gdf_full[basin_gdf_full["id_normalized"] == gage_id_normalized]
+    # Work on a local copy so thread workers do not mutate the shared cached object.
+    basin_lookup = basin_gdf_full.copy()
+    basin_lookup["id_normalized"] = basin_lookup["id"].map(normalize_gage_id)
+    matching_basins = basin_lookup[basin_lookup["id_normalized"] == gage_id_normalized]
     
     if matching_basins.empty:
         raise ValueError(f"No basin found in parquet for gage {gage_id} (normalized: {gage_id_normalized})")
@@ -299,6 +421,7 @@ def delineate_basins_from_csv(max_workers=8, skip_gages=None):
             f"Available columns: {list(gages_df.columns)}"
         )
 
+    gages_df["gage_id"] = gages_df["gage_id"].map(lambda g: str(g).strip() if pd.notna(g) else pd.NA)
     gage_ids = [str(g).strip() for g in gages_df["gage_id"].dropna().tolist()]
     
     # Filter out gages that should be skipped
@@ -327,6 +450,20 @@ def delineate_basins_from_csv(max_workers=8, skip_gages=None):
                 print(f"Failed: {result['gage_id']} -> {result['error']}")
 
     results_df = pd.DataFrame(results).sort_values("gage_id")
+
+    gage_meta = gages_df[["gage_id"]].copy()
+    if "state" in gages_df.columns:
+        gage_meta["state"] = gages_df["state"].map(normalize_state_code)
+    else:
+        gage_meta["state"] = pd.NA
+    gage_meta["region"] = gage_meta["state"].map(get_region_from_state)
+
+    results_df = results_df.merge(
+        gage_meta.drop_duplicates(subset=["gage_id"]),
+        on="gage_id",
+        how="left",
+    )
+
     results_df.to_csv(out_dir / "basin_delineation_summary.csv", index=False)
 
     return results_df
@@ -458,7 +595,14 @@ def get_max_fam_cell_coords(flow_accumulation_raster):
         "fam_col": int(col),
     }
 
-def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accumulation_raster, dem_raster, output_dir):
+def clip_main_layers_for_one_basin(
+    basin_file,
+    flow_direction_raster,
+    flow_accumulation_raster,
+    dem_raster,
+    output_dir,
+    region="CONUS",
+):
     """
     Clip three core geospatial layers (DEM, flow direction, flow accumulation) for a single basin.
     
@@ -526,6 +670,7 @@ def clip_main_layers_for_one_basin(basin_file, flow_direction_raster, flow_accum
 
     return {
         "gage_id": gage_id,
+        "region": str(region).strip().upper(),
         "status": "success",
         "basin_file": str(basin_file),
         "flow_direction": str(flow_dir_out),
@@ -571,29 +716,51 @@ def clip_main_layers_for_all_basins(max_workers=4):
     output_dir = project_root / "BasicData"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    flow_direction_raster = project_root / "data" / "EF5_US_Params" / "basic" / "fdir_usa.tif"
-    flow_accumulation_raster = project_root / "data" / "EF5_US_Params" / "basic" / "facc_usa.tif"
-    dem_raster = project_root / "data" / "EF5_US_Params" / "basic" / "dem_usa.tif"
-
     basin_files = sorted(basin_dir.glob("*_basin.geojson"))
 
     if not basin_files:
         raise FileNotFoundError(f"No basin files found in {basin_dir}")
 
+    basin_summary_csv = project_root / "data" / "basin_delineations" / "basin_delineation_summary.csv"
+    region_lookup = {}
+    if basin_summary_csv.exists():
+        basin_summary_df = pd.read_csv(basin_summary_csv, dtype={"gage_id": str})
+
+        if "state" in basin_summary_df.columns:
+            basin_summary_df["state"] = basin_summary_df["state"].map(normalize_state_code)
+
+        if "region" not in basin_summary_df.columns:
+            if "state" in basin_summary_df.columns:
+                basin_summary_df["region"] = basin_summary_df["state"].map(get_region_from_state)
+            else:
+                basin_summary_df["region"] = "CONUS"
+
+        region_lookup = {
+            str(row["gage_id"]).strip(): str(row.get("region", "CONUS")).strip().upper()
+            for _, row in basin_summary_df.iterrows()
+            if pd.notna(row.get("gage_id"))
+        }
+
     results = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                clip_main_layers_for_one_basin,
-                basin_file,
-                flow_direction_raster,
-                flow_accumulation_raster,
-                dem_raster,
-                output_dir,
-            ): basin_file
-            for basin_file in basin_files
-        }
+        futures = {}
+        for basin_file in basin_files:
+            gage_id = basin_file.stem.replace("_basin", "")
+            region = region_lookup.get(gage_id, "CONUS")
+            flow_direction_raster, flow_accumulation_raster, dem_raster = get_basic_rasters_for_region(project_root, region)
+
+            futures[
+                executor.submit(
+                    clip_main_layers_for_one_basin,
+                    basin_file,
+                    flow_direction_raster,
+                    flow_accumulation_raster,
+                    dem_raster,
+                    output_dir,
+                    region,
+                )
+            ] = basin_file
 
         for future in as_completed(futures):
             basin_file = futures[future]
@@ -607,6 +774,7 @@ def clip_main_layers_for_all_basins(max_workers=4):
             except Exception as e:
                 results.append({
                     "gage_id": gage_id,
+                    "region": region_lookup.get(gage_id, "CONUS"),
                     "status": "failed",
                     "basin_file": str(basin_file),
                     "error": str(e),
@@ -617,8 +785,6 @@ def clip_main_layers_for_all_basins(max_workers=4):
     results_df.to_csv(output_dir / "main_layer_clipping_summary.csv", index=False)
 
     # Update basin delineation summary with snapped outlet coordinates
-    basin_summary_csv = project_root / "data" / "basin_delineations" / "basin_delineation_summary.csv"
-
     if basin_summary_csv.exists():
         basin_summary_df = pd.read_csv(basin_summary_csv, dtype={"gage_id": str})
 
@@ -993,7 +1159,7 @@ def normalize_model_name(model_to_run: str) -> str:
     return model
 
 
-def build_precip_block(freq: str) -> tuple[str, str]:
+def build_precip_block(freq: str, region: str = "CONUS") -> tuple[str, str]:
     """
     Generate EF5 precipitation forcing configuration block based on temporal frequency.
     
@@ -1005,6 +1171,8 @@ def build_precip_block(freq: str) -> tuple[str, str]:
     ---------- 
     freq : str
         Time frequency: '2u' for 2-minute, '1h' for hourly
+    region : str
+        Region key used for hourly precipitation folder selection
         
     Returns
     -------
@@ -1016,13 +1184,21 @@ def build_precip_block(freq: str) -> tuple[str, str]:
     Notes
     -----
     - 2-minute data uses MRMS GRIB2 format from Forcings/Precipitation/2min/
-    - Hourly data uses compressed GRIB2 from Forcings/Precipitation/hourly/
+    - Hourly data uses compressed GRIB2 from Forcings/Precipitation/hourly/{CONUS,AK,HI,PR}
     - File naming patterns use EF5 datetime placeholders (YYYYMMDD-HHUU00)
     """
     # Return:
     # - precip block text
     # - precip forcing name to use in task blocks
     freq = str(freq).strip()
+    region = str(region).strip().upper()
+    hourly_folder_by_region = {
+        "ALASKA": "AK",
+        "HAWAII": "HI",
+        "PUERTO_RICO": "PR",
+        "CONUS": "CONUS",
+    }
+    hourly_folder = hourly_folder_by_region.get(region, "CONUS")
 
     if freq == "2u":
         precip_name = "MRMS_GRIB"
@@ -1030,7 +1206,7 @@ def build_precip_block(freq: str) -> tuple[str, str]:
 TYPE=GRIB2
 UNIT=mm/h
 FREQ=2u
-LOC=Forcings/Precipitation/2min
+LOC=Forcings/Precipitation/2min/{hourly_folder}
 NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.grib2
 """
     else:
@@ -1039,7 +1215,7 @@ NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.grib2
 TYPE=GRIB2
 UNIT=mm/h
 FREQ={freq}
-LOC=Forcings/Precipitation/hourly/CONUS
+LOC=Forcings/Precipitation/hourly/{hourly_folder}
 NAME=RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz
 """
 
@@ -1055,6 +1231,7 @@ def build_control_file_text(
     time_end: str,
     freq: str,
     model_to_run: str,
+    region: str = "CONUS",
 ) -> str:
     """
     Generate complete EF5 control file text with all required configuration sections.
@@ -1109,7 +1286,9 @@ def build_control_file_text(
     All parameter grids reference continental-scale datasets in data/EF5_US_Params/
     """
     gage_id = str(gage_id).strip()
+    region = str(region).strip().upper()
     model_to_run = normalize_model_name(model_to_run)
+    region_cfg = get_region_parameter_config(region)
 
     # Convert EF5 datetime format to control file format (drops seconds)
     # EF5 control files use YYYYMMDDHHMM instead of YYYYMMDDHHMMSS
@@ -1127,7 +1306,7 @@ def build_control_file_text(
 
     basin_area_for_control = int(round(float(basin_area_sqkm)))
 
-    precip_block, precip_name = build_precip_block(freq)
+    precip_block, precip_name = build_precip_block(freq, region=region)
 
     crest_output_folder = f"Output/{gage_id}/crest/"
     sac_output_folder = f"Output/{gage_id}/sac/"
@@ -1136,6 +1315,15 @@ def build_control_file_text(
     crest_states_folder = f"states/{gage_id}/crest/"
     sac_states_folder = f"states/{gage_id}/sac/"
     hp_states_folder = f"states/{gage_id}/hp/"
+
+    kw_grid_lines = ""
+    if region_cfg["kw_under_grid"]:
+        kw_grid_lines += f"under_grid={region_cfg['kw_under_grid']}\n"
+    if region_cfg["kw_leaki_grid"]:
+        kw_grid_lines += f"leaki_grid={region_cfg['kw_leaki_grid']}\n"
+    kw_grid_lines += f"alpha_grid={region_cfg['kw_alpha']}\n"
+    kw_grid_lines += f"beta_grid={region_cfg['kw_beta']}\n"
+    kw_grid_lines += f"alpha0_grid={region_cfg['kw_alpha0']}\n"
 
     control_text = f"""[Basic]
 DEM=BasicData/{gage_id}_dem.tif
@@ -1150,8 +1338,8 @@ SelfFAM=false
 TYPE=TIF
 UNIT=mm/d
 FREQ=1m
-LOC=Forcings/PET/
-NAME=PET_MM_usa.tif
+LOC={region_cfg['pet_loc']}
+NAME={region_cfg['pet_name']}
 
 [Gauge {gage_id}]
 LON={longitude}
@@ -1165,10 +1353,10 @@ WANTCO=true
 GAUGE={gage_id}
 
 [CrestParamSet {gage_id}crest]
-wm_grid=data/EF5_US_Params/crest_params/wm_usa.tif
-b_grid=data/EF5_US_Params/crest_params/b_usa.tif
-im_grid=data/EF5_US_Params/crest_params/im_usa.tif
-fc_grid=data/EF5_US_Params/crest_params/ksat_usa.tif
+wm_grid={region_cfg['crest_wm']}
+b_grid={region_cfg['crest_b']}
+im_grid={region_cfg['crest_im']}
+fc_grid={region_cfg['crest_fc']}
 gauge={gage_id}
 wm=1.0
 b=1.0
@@ -1219,12 +1407,7 @@ precip=1.0
 split=1.0 
 
 [kwparamset {gage_id}kw]
-under_grid=data/EF5_US_Params/kw_params/ksat_usa.tif
-leaki_grid=data/EF5_US_Params/kw_params/leaki_usa.tif
-alpha_grid=data/EF5_US_Params/kw_params/alpha_usa.tif
-beta_grid=data/EF5_US_Params/kw_params/beta_usa.tif
-alpha0_grid=data/EF5_US_Params/kw_params/alpha0_usa.tif
-gauge={gage_id}
+{kw_grid_lines}gauge={gage_id}
 alpha0=1.0
 alpha=1.0
 beta=1.0
@@ -1309,6 +1492,13 @@ def _create_one_control_file(
     row = summary_lookup[gage_id]
 
     try:
+        region = str(row.get("region", "CONUS")).strip().upper()
+        if not region:
+            region = "CONUS"
+
+        if region != "CONUS" and normalize_model_name(model_to_run) != "CREST":
+            raise ValueError("CREST only available model outside CONUS")
+
         crest_output_dir = project_root / "Output" / gage_id / "crest"
         sac_output_dir = project_root / "Output" / gage_id / "sac"
         hp_output_dir = project_root / "Output" / gage_id / "hp"
@@ -1334,6 +1524,7 @@ def _create_one_control_file(
             time_end=time_end,
             freq=freq,
             model_to_run=model_to_run,
+            region=region,
         )
 
         out_file = out_dir / f"control_{gage_id}.txt"
@@ -1350,6 +1541,7 @@ def _create_one_control_file(
             "sac_states_folder": str(sac_states_dir),
             "hp_states_folder": str(hp_states_dir),
             "model_to_run": normalize_model_name(model_to_run),
+            "region": region,
             "freq": freq,
         }
 
@@ -1384,10 +1576,27 @@ def create_control_files_for_all_gages(
 
     gages_df = pd.read_csv(gage_csv, dtype={"gage_id": str})
     summary_df = pd.read_csv(summary_csv, dtype={"gage_id": str})
+
+    gages_df["gage_id"] = gages_df["gage_id"].map(lambda g: str(g).strip() if pd.notna(g) else pd.NA)
+    if "state" in gages_df.columns:
+        gages_df["state"] = gages_df["state"].map(normalize_state_code)
+    else:
+        gages_df["state"] = pd.NA
+    gages_df["region"] = gages_df["state"].map(get_region_from_state)
     
     # Filter out gages that should be skipped
     if skip_gages:
         gages_df = gages_df[~gages_df["gage_id"].isin(skip_gages)]
+
+    for col in ["state", "region"]:
+        if col in summary_df.columns:
+            summary_df = summary_df.drop(columns=[col])
+
+    summary_df = summary_df.merge(
+        gages_df[["gage_id", "state", "region"]].drop_duplicates(subset=["gage_id"]),
+        on="gage_id",
+        how="left",
+    )
 
     if "gage_id" not in gages_df.columns:
         raise ValueError(
@@ -1510,9 +1719,10 @@ def run_ef5_for_all_controls(max_workers: int = 4, skip_gages=None):
 
     # Filter out control files for gages that should be skipped
     if skip_gages:
+        skip_set = {str(g).strip() for g in skip_gages}
         control_files = [
             cf for cf in control_files 
-            if not any(gage_id in cf.name for gage_id in skip_gages)
+            if cf.stem.replace("control_", "") not in skip_set
         ]
 
     if not control_files:
@@ -1825,7 +2035,15 @@ def ensure_required_directories(project_root: Path):
         project_root / "Forcings",
         project_root / "Forcings" / "Precipitation",
         project_root / "Forcings" / "Precipitation" / "2min",
+        project_root / "Forcings" / "Precipitation" / "2min" / "CONUS",
+        project_root / "Forcings" / "Precipitation" / "2min" / "AK",
+        project_root / "Forcings" / "Precipitation" / "2min" / "HI",
+        project_root / "Forcings" / "Precipitation" / "2min" / "PR",
         project_root / "Forcings" / "Precipitation" / "hourly",
+        project_root / "Forcings" / "Precipitation" / "hourly" / "CONUS",
+        project_root / "Forcings" / "Precipitation" / "hourly" / "AK",
+        project_root / "Forcings" / "Precipitation" / "hourly" / "HI",
+        project_root / "Forcings" / "Precipitation" / "hourly" / "PR",
         project_root / "Forcings" / "PET",
         project_root / "BasicData",
         project_root / "observations",
@@ -1866,8 +2084,8 @@ def run_full_ef5_setup(
     
     Step 1: Basin Delineation
         - Reads gage IDs from gages/gage_ids.csv
-        - Fetches USGS site metadata and coordinates
-        - Delineates watersheds using NLDI service
+        - Loads pre-computed basin polygons from flash_flood_protocol_basins.parquet
+        - Matches basins by normalized gage ID
         - Saves basin boundaries as GeoJSON files
         - Creates basin_delineation_summary.csv
         
@@ -1888,7 +2106,7 @@ def run_full_ef5_setup(
         - Merges basin, raster, and observation results
         - Generates EF5 model configuration files
         - Creates control_*.txt files with model parameters
-        - Creates control_files_summary.csv
+        - Creates control_file_creation_summary.csv
         
     Step 5: EF5 Model Execution
         - Runs EF5 executable subprocess for each control file
@@ -1913,7 +2131,7 @@ def run_full_ef5_setup(
     freq : str, default '1h'
         Temporal resolution ('1h' for hourly, '2u' for 2-minute)
     basin_workers : int, default 8
-        Thread pool size for basin delineation (I/O-bound USGS/NLDI API calls)
+        Thread pool size for basin delineation (local lookup + GeoJSON writes)
     clip_workers : int, default 4
         Process pool size for raster clipping (CPU-bound geospatial operations)
     usgs_workers : int, default 8  
@@ -1931,12 +2149,12 @@ def run_full_ef5_setup(
     -------
     dict
         Comprehensive results summary containing DataFrames from all workflow steps:
-        - 'basin_results': Basin delineation outcomes
-        - 'clip_results': Raster clipping outcomes
-        - 'usgs_results': USGS data download outcomes
-        - 'control_results': Control file creation outcomes
-        - 'ef5_results': Model execution outcomes
-        - 'plot_results': Visualization creation outcomes (if enabled)
+        - 'basins': Basin delineation outcomes
+        - 'clipping': Raster clipping outcomes
+        - 'usgs': USGS data download outcomes
+        - 'control_files': Control file creation outcomes
+        - 'ef5_runs': Model execution outcomes
+        - 'plots': Visualization creation outcomes (if enabled)
         
     Notes
     -----
@@ -1951,9 +2169,7 @@ def run_full_ef5_setup(
     FileNotFoundError
         If required input files (gages/gage_ids.csv, EF5 executable) are missing
     ValueError
-        If time_begin >= time_end or invalid model/frequency specified
-    CalledProcessError
-        If EF5 executable fails (captured per-gage, not fatal to workflow)
+        If time_begin >= time_end or model name is invalid
     """
     project_root = Path.cwd()
     ensure_required_directories(project_root)
@@ -2119,12 +2335,6 @@ def main():
 
     print("\nEF5 execution summary:")
     print(results["ef5_runs"])
-
-    if not results["plots"].empty:
-        print("\nPlot creation summary:")
-        print(results["plots"])
-    else:
-        print("\nNo plots were created.")
 
     if not results["plots"].empty:
         print("\nPlot creation summary:")
