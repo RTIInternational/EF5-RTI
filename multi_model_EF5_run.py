@@ -59,7 +59,7 @@ in parallel, supporting three hydrological models: CREST, SAC-SMA, and HP.
     ├── data/EF5-oCONUS-Parameters/     # Input: Regional (AK/HI/PR) parameter grids
     │   ├── basic/{ak,hi,carib}_{dem,fdir,facc}_*.tif
     │   ├── parameters/{CREST,KW}/*.tif
-    │   └── pet/FAO.PET.MM.tif
+    │   └── pet/FAO.PET.MM.mm_per_day.proc.tif
     ├── Forcings/                       # Input: Precipitation and PET data
     │   ├── Precipitation/
     │   │   ├── 2min/{CONUS,AK,HI,PR}/ # 2-minute MRMS data (regional)
@@ -193,7 +193,7 @@ def get_region_parameter_config(region: str) -> dict:
     if region == "ALASKA":
         return {
             "pet_loc": "data/EF5-oCONUS-Parameters/pet/",
-            "pet_name": "FAO.PET.MM.tif",
+            "pet_name": "FAO.PET.MM.mm_per_day.proc.tif",
             "crest_wm": "data/EF5-oCONUS-Parameters/parameters/CREST/wm_alaska_20190308c.tif",
             "crest_b": "data/EF5-oCONUS-Parameters/parameters/CREST/b_alaska_20190308c.tif",
             "crest_im": "data/EF5-oCONUS-Parameters/parameters/CREST/im_alaska_20190308c.tif",
@@ -208,7 +208,7 @@ def get_region_parameter_config(region: str) -> dict:
     if region == "HAWAII":
         return {
             "pet_loc": "data/EF5-oCONUS-Parameters/pet/",
-            "pet_name": "FAO.PET.MM.tif",
+            "pet_name": "FAO.PET.MM.mm_per_day.proc.tif",
             "crest_wm": "data/EF5-oCONUS-Parameters/parameters/CREST/wm_hawaii_20190304c.tif",
             "crest_b": "data/EF5-oCONUS-Parameters/parameters/CREST/b_hawaii_20190304c.tif",
             "crest_im": "data/EF5-oCONUS-Parameters/parameters/CREST/im_hawaii_20190304c.tif",
@@ -223,7 +223,7 @@ def get_region_parameter_config(region: str) -> dict:
     if region == "PUERTO_RICO":
         return {
             "pet_loc": "data/EF5-oCONUS-Parameters/pet/",
-            "pet_name": "FAO.PET.MM.tif",
+            "pet_name": "FAO.PET.MM.mm_per_day.proc.tif",
             "crest_wm": "data/EF5-oCONUS-Parameters/parameters/CREST/wm_carib_20190328c.tif",
             "crest_b": "data/EF5-oCONUS-Parameters/parameters/CREST/b_carib_20190328c.tif",
             "crest_im": "data/EF5-oCONUS-Parameters/parameters/CREST/im_carib_20190328c.tif",
