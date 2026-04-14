@@ -200,6 +200,8 @@ def get_region_parameter_config(region: str) -> dict:
             "crest_fc": "data/EF5-oCONUS-Parameters/parameters/CREST/ksat_alaska_20190308c.tif",
             "kw_under_grid": "",
             "kw_leaki_grid": "",
+            "kw_under": "1.673110",
+            "kw_leaki": "0.043105",
             "kw_alpha": "data/EF5-oCONUS-Parameters/parameters/KW/alpha_alaska_20190308c.tif",
             "kw_beta": "data/EF5-oCONUS-Parameters/parameters/KW/beta_alaska_20190308c.tif",
             "kw_alpha0": "data/EF5-oCONUS-Parameters/parameters/KW/alpha0_alaska_20190308c.tif",
@@ -215,6 +217,8 @@ def get_region_parameter_config(region: str) -> dict:
             "crest_fc": "data/EF5-oCONUS-Parameters/parameters/CREST/ksat_hawaii_20190304c.tif",
             "kw_under_grid": "",
             "kw_leaki_grid": "",
+            "kw_under": "1.673110",
+            "kw_leaki": "0.043105",
             "kw_alpha": "data/EF5-oCONUS-Parameters/parameters/KW/alpha_hawaii_20190304c.tif",
             "kw_beta": "data/EF5-oCONUS-Parameters/parameters/KW/beta_hawaii_20190304c.tif",
             "kw_alpha0": "data/EF5-oCONUS-Parameters/parameters/KW/alpha0_hawaii_20190304c.tif",
@@ -230,6 +234,8 @@ def get_region_parameter_config(region: str) -> dict:
             "crest_fc": "data/EF5-oCONUS-Parameters/parameters/CREST/ksat_carib_20190328c.tif",
             "kw_under_grid": "",
             "kw_leaki_grid": "",
+            "kw_under": "1.673110",
+            "kw_leaki": "0.043105",
             "kw_alpha": "data/EF5-oCONUS-Parameters/parameters/KW/alpha_carib_20190328c.tif",
             "kw_beta": "data/EF5-oCONUS-Parameters/parameters/KW/beta_carib_20190328c.tif",
             "kw_alpha0": "data/EF5-oCONUS-Parameters/parameters/KW/alpha0_carib_20190328c.tif",
@@ -244,6 +250,8 @@ def get_region_parameter_config(region: str) -> dict:
         "crest_fc": "data/EF5_US_Params/crest_params/ksat_usa.tif",
         "kw_under_grid": "data/EF5_US_Params/kw_params/ksat_usa.tif",
         "kw_leaki_grid": "data/EF5_US_Params/kw_params/leaki_usa.tif",
+        "kw_under": "1.0",
+        "kw_leaki": "1.0",
         "kw_alpha": "data/EF5_US_Params/kw_params/alpha_usa.tif",
         "kw_beta": "data/EF5_US_Params/kw_params/beta_usa.tif",
         "kw_alpha0": "data/EF5_US_Params/kw_params/alpha0_usa.tif",
@@ -514,6 +522,7 @@ def clip_raster_to_basin(in_raster, basin_gdf, out_raster):
             src,
             shapes,
             crop=True,
+            all_touched=True,
             nodata=src.nodata,
         )
 
@@ -594,6 +603,7 @@ def get_max_fam_cell_coords(flow_accumulation_raster):
         "fam_row": int(row),
         "fam_col": int(col),
     }
+
 
 def clip_main_layers_for_one_basin(
     basin_file,
@@ -718,11 +728,48 @@ def clip_main_layers_for_all_basins(max_workers=4):
 
     basin_files = sorted(basin_dir.glob("*_basin.geojson"))
 
+    gage_csv = project_root / "gages" / "gage_ids.csv"
+    if not gage_csv.exists():
+        raise FileNotFoundError(f"Gage CSV not found: {gage_csv}")
+
+    gages_df = pd.read_csv(gage_csv, dtype={"gage_id": str})
+    if "gage_id" not in gages_df.columns:
+        raise ValueError(
+            f"Column 'gage_id' not found in {gage_csv}. "
+            f"Available columns: {list(gages_df.columns)}"
+        )
+    gage_ids = {
+        str(g).strip()
+        for g in gages_df["gage_id"].dropna().tolist()
+        if str(g).strip()
+    }
+    basin_files = [
+        bf for bf in basin_files
+        if bf.stem.replace("_basin", "") in gage_ids
+    ]
+
     if not basin_files:
         raise FileNotFoundError(f"No basin files found in {basin_dir}")
 
     basin_summary_csv = project_root / "data" / "basin_delineations" / "basin_delineation_summary.csv"
+
+    # Primary source for region metadata.
     region_lookup = {}
+    if gage_csv.exists():
+        gage_df = pd.read_csv(gage_csv, dtype={"gage_id": str})
+        if "state" in gage_df.columns:
+            gage_df["state"] = gage_df["state"].map(normalize_state_code)
+            gage_df["region"] = gage_df["state"].map(get_region_from_state)
+        else:
+            gage_df["region"] = "CONUS"
+
+        region_lookup = {
+            str(row["gage_id"]).strip(): str(row.get("region", "CONUS")).strip().upper()
+            for _, row in gage_df.iterrows()
+            if pd.notna(row.get("gage_id")) and str(row["gage_id"]).strip()
+        }
+
+    # Fallback source for region metadata when gage_ids.csv does not include a gage.
     if basin_summary_csv.exists():
         basin_summary_df = pd.read_csv(basin_summary_csv, dtype={"gage_id": str})
 
@@ -735,11 +782,13 @@ def clip_main_layers_for_all_basins(max_workers=4):
             else:
                 basin_summary_df["region"] = "CONUS"
 
-        region_lookup = {
-            str(row["gage_id"]).strip(): str(row.get("region", "CONUS")).strip().upper()
-            for _, row in basin_summary_df.iterrows()
-            if pd.notna(row.get("gage_id"))
-        }
+        for _, row in basin_summary_df.iterrows():
+            if pd.isna(row.get("gage_id")):
+                continue
+            gid = str(row["gage_id"]).strip()
+            if not gid:
+                continue
+            region_lookup.setdefault(gid, str(row.get("region", "CONUS")).strip().upper())
 
     results = []
 
@@ -917,6 +966,10 @@ def fetch_usgs_iv(gage_id: str, start_utc: datetime, end_utc: datetime):
         except ValueError:
             continue  # Skip non-numeric values
 
+        # USGS commonly uses -999999 as a missing-value sentinel in IV feeds.
+        if q_cfs <= -999999:
+            continue
+
         # Convert from cubic feet per second to cubic meters per second
         q_cms = q_cfs * CFS_TO_CMS
         points.append((dt, q_cms))
@@ -1078,6 +1131,211 @@ def fetch_usgs_for_all_gages(time_begin: str, time_end: str, max_workers=8, skip
 
     return results_df
 
+
+def fetch_usgs_site_coords(gage_id: str):
+    """
+    Fetch USGS site latitude/longitude metadata for one gage via NWIS Site Service.
+
+    Parameters
+    ----------
+    gage_id : str
+        USGS stream gage identifier.
+
+    Returns
+    -------
+    dict
+        Result record with keys:
+        - gage_id
+        - usgs_latitude
+        - usgs_longitude
+        - usgs_coord_status
+        - usgs_coord_note
+    """
+    gage_id = normalize_gage_id(gage_id)
+    params = {
+        "format": "rdb",
+        "sites": gage_id,
+        "siteOutput": "basic",
+        "siteStatus": "all",
+    }
+    url = "https://waterservices.usgs.gov/nwis/site/?" + urlencode(params)
+
+    try:
+        with urlopen(url) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+    except Exception as e:
+        return {
+            "gage_id": gage_id,
+            "usgs_latitude": pd.NA,
+            "usgs_longitude": pd.NA,
+            "usgs_coord_status": "failed",
+            "usgs_coord_note": f"request_error: {e}",
+        }
+
+    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
+    if len(lines) < 3:
+        return {
+            "gage_id": gage_id,
+            "usgs_latitude": pd.NA,
+            "usgs_longitude": pd.NA,
+            "usgs_coord_status": "failed",
+            "usgs_coord_note": "no_site_records",
+        }
+
+    header = lines[0].split("\t")
+    data_lines = lines[2:]
+
+    selected = None
+    for line in data_lines:
+        parts = line.split("\t")
+        if len(parts) < len(header):
+            continue
+        row = dict(zip(header, parts))
+        site_no = normalize_gage_id(row.get("site_no", ""))
+        if site_no == gage_id:
+            selected = row
+            break
+
+    if selected is None and data_lines:
+        parts = data_lines[0].split("\t")
+        if len(parts) >= len(header):
+            selected = dict(zip(header, parts))
+
+    if not selected:
+        return {
+            "gage_id": gage_id,
+            "usgs_latitude": pd.NA,
+            "usgs_longitude": pd.NA,
+            "usgs_coord_status": "failed",
+            "usgs_coord_note": "no_parseable_site_rows",
+        }
+
+    lat_raw = selected.get("dec_lat_va", "").strip()
+    lon_raw = selected.get("dec_long_va", "").strip()
+
+    try:
+        lat = float(lat_raw)
+        lon = float(lon_raw)
+    except Exception:
+        return {
+            "gage_id": gage_id,
+            "usgs_latitude": pd.NA,
+            "usgs_longitude": pd.NA,
+            "usgs_coord_status": "failed",
+            "usgs_coord_note": "missing_or_invalid_lat_lon",
+        }
+
+    return {
+        "gage_id": gage_id,
+        "usgs_latitude": lat,
+        "usgs_longitude": lon,
+        "usgs_coord_status": "success",
+        "usgs_coord_note": "",
+    }
+
+
+def update_basin_summary_with_usgs_coords(max_workers=8, refresh=False, skip_gages=None):
+    """
+    Fetch USGS site coordinates and merge them into basin_delineation_summary.csv.
+
+    Parameters
+    ----------
+    max_workers : int
+        Number of thread workers for NWIS site metadata requests.
+    refresh : bool
+        If True, re-fetch coordinates for all gages in the active gage list.
+        If False, fetch only rows missing USGS coordinate values.
+    skip_gages : set or None
+        Optional set of gage IDs to skip.
+
+    Returns
+    -------
+    DataFrame
+        Fetch results for requested gages.
+    """
+    project_root = Path.cwd()
+    gage_csv = project_root / "gages" / "gage_ids.csv"
+    basin_summary_csv = project_root / "data" / "basin_delineations" / "basin_delineation_summary.csv"
+
+    if not gage_csv.exists():
+        raise FileNotFoundError(f"Gage CSV not found: {gage_csv}")
+    if not basin_summary_csv.exists():
+        raise FileNotFoundError(f"Basin summary CSV not found: {basin_summary_csv}")
+
+    gages_df = pd.read_csv(gage_csv, dtype={"gage_id": str})
+    if "gage_id" not in gages_df.columns:
+        raise ValueError(
+            f"Column 'gage_id' not found in {gage_csv}. "
+            f"Available columns: {list(gages_df.columns)}"
+        )
+
+    gage_ids = [normalize_gage_id(g) for g in gages_df["gage_id"].dropna().tolist() if str(g).strip()]
+    if skip_gages:
+        skip_set = {normalize_gage_id(g) for g in skip_gages}
+        gage_ids = [g for g in gage_ids if g not in skip_set]
+
+    summary_df = pd.read_csv(basin_summary_csv, dtype={"gage_id": str})
+    summary_df["gage_id"] = summary_df["gage_id"].map(lambda g: normalize_gage_id(g) if pd.notna(g) else pd.NA)
+
+    for col in ["usgs_latitude", "usgs_longitude", "usgs_coord_status", "usgs_coord_note"]:
+        if col not in summary_df.columns:
+            summary_df[col] = pd.NA
+
+    summary_subset = summary_df[summary_df["gage_id"].isin(gage_ids)].copy()
+    if refresh:
+        to_fetch = summary_subset["gage_id"].dropna().unique().tolist()
+    else:
+        missing_mask = summary_subset["usgs_latitude"].isna() | summary_subset["usgs_longitude"].isna()
+        to_fetch = summary_subset.loc[missing_mask, "gage_id"].dropna().unique().tolist()
+
+    if not to_fetch:
+        empty = pd.DataFrame(columns=[
+            "gage_id",
+            "usgs_latitude",
+            "usgs_longitude",
+            "usgs_coord_status",
+            "usgs_coord_note",
+        ])
+        return empty
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_gage = {
+            executor.submit(fetch_usgs_site_coords, gage_id): gage_id
+            for gage_id in to_fetch
+        }
+
+        for future in as_completed(future_to_gage):
+            gage_id = future_to_gage[future]
+            try:
+                result = future.result()
+                results.append(result)
+                print(f"USGS coords done: {gage_id}")
+            except Exception as e:
+                results.append({
+                    "gage_id": gage_id,
+                    "usgs_latitude": pd.NA,
+                    "usgs_longitude": pd.NA,
+                    "usgs_coord_status": "failed",
+                    "usgs_coord_note": str(e),
+                })
+                print(f"USGS coords failed: {gage_id} -> {e}")
+
+    coords_df = pd.DataFrame(results)
+    if not coords_df.empty:
+        coords_df["gage_id"] = coords_df["gage_id"].map(normalize_gage_id)
+
+        for _, row in coords_df.iterrows():
+            gid = row["gage_id"]
+            mask = summary_df["gage_id"] == gid
+            summary_df.loc[mask, "usgs_latitude"] = row.get("usgs_latitude", pd.NA)
+            summary_df.loc[mask, "usgs_longitude"] = row.get("usgs_longitude", pd.NA)
+            summary_df.loc[mask, "usgs_coord_status"] = row.get("usgs_coord_status", pd.NA)
+            summary_df.loc[mask, "usgs_coord_note"] = row.get("usgs_coord_note", pd.NA)
+
+    summary_df.to_csv(basin_summary_csv, index=False)
+    return coords_df.sort_values("gage_id") if not coords_df.empty else coords_df
+
 def ef5_datetime_to_control_time(value: str) -> str:
     """
     Convert EF5 datetime format to control file time format.
@@ -1198,7 +1456,12 @@ def build_precip_block(freq: str, region: str = "CONUS") -> tuple[str, str]:
         "PUERTO_RICO": "PR",
         "CONUS": "CONUS",
     }
-    hourly_folder = hourly_folder_by_region.get(region, "CONUS")
+    if region not in hourly_folder_by_region:
+        raise ValueError(
+            f"Unknown region '{region}'. Must be one of: "
+            f"{sorted(hourly_folder_by_region.keys())}"
+        )
+    hourly_folder = hourly_folder_by_region[region]
 
     if freq == "2u":
         precip_name = "MRMS_GRIB"
@@ -1211,12 +1474,15 @@ NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.grib2
 """
     else:
         precip_name = "MRMS"
+        hourly_name = "RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz"
+        if region == "HAWAII":
+            hourly_name = "MRMS_RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz"
         precip_block = f"""[PrecipForcing {precip_name}]
 TYPE=GRIB2
 UNIT=mm/h
 FREQ={freq}
 LOC=Forcings/Precipitation/hourly/{hourly_folder}
-NAME=RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz
+NAME={hourly_name}
 """
 
     return precip_block, precip_name
@@ -1308,13 +1574,13 @@ def build_control_file_text(
 
     precip_block, precip_name = build_precip_block(freq, region=region)
 
-    crest_output_folder = f"Output/{gage_id}/crest/"
-    sac_output_folder = f"Output/{gage_id}/sac/"
-    hp_output_folder = f"Output/{gage_id}/hp/"
+    crest_output_folder = f"Output/{gage_id}/crest"
+    sac_output_folder = f"Output/{gage_id}/sac"
+    hp_output_folder = f"Output/{gage_id}/hp"
 
-    crest_states_folder = f"states/{gage_id}/crest/"
-    sac_states_folder = f"states/{gage_id}/sac/"
-    hp_states_folder = f"states/{gage_id}/hp/"
+    crest_states_folder = f"states/{gage_id}/crest"
+    sac_states_folder = f"states/{gage_id}/sac"
+    hp_states_folder = f"states/{gage_id}/hp"
 
     kw_grid_lines = ""
     if region_cfg["kw_under_grid"]:
@@ -1411,8 +1677,8 @@ split=1.0
 alpha0=1.0
 alpha=1.0
 beta=1.0
-under=1
-leaki=1.0
+under={region_cfg['kw_under']}
+leaki={region_cfg['kw_leaki']}
 th=10.0
 isu=00.0
 
@@ -1479,6 +1745,7 @@ def _create_one_control_file(
     time_end: str,
     model_to_run: str,
     freq: str,
+    coord_source: str,
 ):
     gage_id = str(gage_id).strip()
 
@@ -1517,8 +1784,8 @@ def _create_one_control_file(
 
         control_text = build_control_file_text(
             gage_id=gage_id,
-            latitude=float(row["snapped_latitude"]),
-            longitude=float(row["snapped_longitude"]),
+            latitude=float(row["usgs_latitude"]) if coord_source == "usgs" else float(row["snapped_latitude"]),
+            longitude=float(row["usgs_longitude"]) if coord_source == "usgs" else float(row["snapped_longitude"]),
             basin_area_sqkm=float(row["basin_area_sqkm"]),
             time_begin=time_begin,
             time_end=time_end,
@@ -1543,6 +1810,10 @@ def _create_one_control_file(
             "model_to_run": normalize_model_name(model_to_run),
             "region": region,
             "freq": freq,
+            "coord_source_requested": coord_source,
+            "coord_source_used": coord_source,
+            "control_latitude": float(row["usgs_latitude"]) if coord_source == "usgs" else float(row["snapped_latitude"]),
+            "control_longitude": float(row["usgs_longitude"]) if coord_source == "usgs" else float(row["snapped_longitude"]),
         }
 
     except Exception as e:
@@ -1560,6 +1831,7 @@ def create_control_files_for_all_gages(
     freq: str = "1h",
     max_workers: int = 8,
     skip_gages=None,
+    coord_source: str = "snapped",
 ):
     project_root = Path.cwd()
 
@@ -1576,6 +1848,10 @@ def create_control_files_for_all_gages(
 
     gages_df = pd.read_csv(gage_csv, dtype={"gage_id": str})
     summary_df = pd.read_csv(summary_csv, dtype={"gage_id": str})
+
+    coord_source = str(coord_source).strip().lower()
+    if coord_source not in {"snapped", "usgs"}:
+        raise ValueError("coord_source must be one of: snapped, usgs")
 
     gages_df["gage_id"] = gages_df["gage_id"].map(lambda g: str(g).strip() if pd.notna(g) else pd.NA)
     if "state" in gages_df.columns:
@@ -1597,6 +1873,43 @@ def create_control_files_for_all_gages(
         on="gage_id",
         how="left",
     )
+
+    if coord_source == "usgs":
+        required = ["usgs_latitude", "usgs_longitude"]
+        missing_cols = [c for c in required if c not in summary_df.columns]
+        if missing_cols:
+            raise ValueError(
+                "USGS coordinate columns missing from basin_delineation_summary.csv: "
+                f"{missing_cols}. Run with --refresh-usgs-coords first."
+            )
+        missing_rows = summary_df[
+            summary_df["gage_id"].notna() &
+            (summary_df["usgs_latitude"].isna() | summary_df["usgs_longitude"].isna())
+        ]
+        if len(missing_rows) > 0:
+            sample = ", ".join(missing_rows["gage_id"].astype(str).head(5).tolist())
+            extra = "" if len(missing_rows) <= 5 else f" ... and {len(missing_rows) - 5} more"
+            raise ValueError(
+                "USGS coordinates requested but missing for gage(s): "
+                f"{sample}{extra}. Run with --refresh-usgs-coords first."
+            )
+
+    # Validate early: SAC and HP models only work in CONUS
+    # Fail fast before processing other steps
+    if model_to_run.upper() != "CREST":
+        non_conus_gages = summary_df[
+            (summary_df["region"].notna()) & 
+            (summary_df["region"].str.upper() != "CONUS")
+        ]
+        if len(non_conus_gages) > 0:
+            gage_list = ", ".join(non_conus_gages["gage_id"].unique()[:5])
+            msg = (
+                f"ERROR: {model_to_run.upper()} model is only available for CONUS.\n"
+                f"Found {len(non_conus_gages)} gage(s) outside CONUS: {gage_list}"
+            )
+            if len(non_conus_gages) > 5:
+                msg += f" ... and {len(non_conus_gages) - 5} more"
+            raise ValueError(msg + "\nUse CREST model for Alaska, Hawaii, or Puerto Rico regions.")
 
     if "gage_id" not in gages_df.columns:
         raise ValueError(
@@ -1633,6 +1946,7 @@ def create_control_files_for_all_gages(
                 time_end,
                 model_to_run,
                 freq,
+                coord_source,
             ): gage_id
             for gage_id in gage_ids
         }
@@ -2072,6 +2386,8 @@ def run_full_ef5_setup(
     ef5_workers: int = 4,
     plot_workers: int = 4,
     create_plots: bool = True,
+    coord_source: str = "snapped",
+    refresh_usgs_coords: bool = False,
 ):
     """
     Execute the complete 6-step EF5 hydrological modeling workflow.
@@ -2197,6 +2513,16 @@ def run_full_ef5_setup(
         skip_gages=skip_gages,
     )
 
+    # Optional: fetch USGS site coordinates and merge into basin summary
+    usgs_coord_results = pd.DataFrame()
+    if refresh_usgs_coords or str(coord_source).strip().lower() == "usgs":
+        print("\n--- Step 3b: Fetching USGS gage coordinates ---")
+        usgs_coord_results = update_basin_summary_with_usgs_coords(
+            max_workers=usgs_workers,
+            refresh=refresh_usgs_coords,
+            skip_gages=skip_gages,
+        )
+
     # Step 4: Generate EF5 model configuration files
     print("\n--- Step 4: Creating control files ---")
     control_results = create_control_files_for_all_gages(
@@ -2206,6 +2532,7 @@ def run_full_ef5_setup(
         freq=freq,
         max_workers=control_workers,
         skip_gages=skip_gages,
+        coord_source=coord_source,
     )
 
     # Step 5: Execute EF5 hydrological model simulations
@@ -2230,6 +2557,7 @@ def run_full_ef5_setup(
         "basins": basin_results,
         "clipping": clip_results,
         "usgs": usgs_results,
+        "usgs_coords": usgs_coord_results,
         "control_files": control_results,
         "ef5_runs": ef5_results,
         "plots": plot_results,
@@ -2303,6 +2631,17 @@ def main():
         action="store_true",
         help="Skip creating interactive Plotly plots",
     )
+    parser.add_argument(
+        "--coord-source",
+        choices=["snapped", "usgs"],
+        default="snapped",
+        help="Coordinate source for control-file gauge LAT/LON",
+    )
+    parser.add_argument(
+        "--refresh-usgs-coords",
+        action="store_true",
+        help="Fetch USGS site coordinates and merge into basin_delineation_summary.csv before control-file creation",
+    )
 
     args = parser.parse_args()
 
@@ -2318,6 +2657,8 @@ def main():
         ef5_workers=args.ef5_workers,
         plot_workers=args.plot_workers,
         create_plots=not args.no_plots,
+        coord_source=args.coord_source,
+        refresh_usgs_coords=args.refresh_usgs_coords,
     )
 
     print("\nWorkflow complete.")
@@ -2329,6 +2670,10 @@ def main():
 
     print("\nUSGS summary:")
     print(results["usgs"])
+
+    if "usgs_coords" in results and not results["usgs_coords"].empty:
+        print("\nUSGS coordinate summary:")
+        print(results["usgs_coords"])
 
     print("\nControl file summary:")
     print(results["control_files"])
