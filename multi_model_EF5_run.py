@@ -1498,6 +1498,10 @@ def build_control_file_text(
     freq: str,
     model_to_run: str,
     region: str = "CONUS",
+    save_state: str = 'false',
+    read_states: str = 'false',
+    initstatetimestep: str = '',
+    stateinterval: str = '1d',
 ) -> str:
     """
     Generate complete EF5 control file text with all required configuration sections.
@@ -1590,6 +1594,48 @@ def build_control_file_text(
     kw_grid_lines += f"alpha_grid={region_cfg['kw_alpha']}\n"
     kw_grid_lines += f"beta_grid={region_cfg['kw_beta']}\n"
     kw_grid_lines += f"alpha0_grid={region_cfg['kw_alpha0']}\n"
+
+
+    # Helper for dynamic save state block
+    def save_state_block(output_dir, state_dir, save_state, read_states, statefileformat, initstatetimestep, stateinterval):
+        return f"""OUTPUT={output_dir}
+STATE_DIR={state_dir}
+SAVE_STATE={save_state}
+READ_STATES={read_states}
+STATEFILEFORMAT={statefileformat}
+INITSTATETIMESTEP={initstatetimestep}
+STATEINTERVAL={stateinterval}"""
+
+    # Dynamic save_state_fields using function arguments
+    save_state_fields = {
+        'crest': {
+            'output_dir': crest_output_folder,
+            'state_dir': crest_states_folder,
+            'save_state': save_state,
+            'read_states': read_states,
+            'statefileformat': 'netcdf',
+            'initstatetimestep': initstatetimestep,
+            'stateinterval': stateinterval,
+        },
+        'sac': {
+            'output_dir': sac_output_folder,
+            'state_dir': sac_states_folder,
+            'save_state': save_state,
+            'read_states': read_states,
+            'statefileformat': 'netcdf',
+            'initstatetimestep': initstatetimestep,
+            'stateinterval': stateinterval,
+        },
+        'hp': {
+            'output_dir': hp_output_folder,
+            'state_dir': hp_states_folder,
+            'save_state': save_state,
+            'read_states': read_states,
+            'statefileformat': 'netcdf',
+            'initstatetimestep': initstatetimestep,
+            'stateinterval': stateinterval,
+        },
+    }
 
     control_text = f"""[Basic]
 DEM=BasicData/{gage_id}_dem.tif
@@ -1690,8 +1736,7 @@ ROUTING_PARAM_SET={gage_id}kw
 BASIN={gage_id}
 PRECIP={precip_name}
 PET=PET
-OUTPUT={crest_output_folder}
-STATES={crest_states_folder}
+{save_state_block(**save_state_fields['crest'])}
 output_grids=MAXUNITSTREAMFLOW|MAXSTREAMFLOW
 TIMESTEP={freq}
 TIME_BEGIN={time_begin_ctrl}
@@ -1706,8 +1751,7 @@ ROUTING_PARAM_SET={gage_id}kw
 BASIN={gage_id}
 PRECIP={precip_name}
 PET=PET
-OUTPUT={sac_output_folder}
-STATES={sac_states_folder}
+{save_state_block(**save_state_fields['sac'])}
 output_grids=MAXUNITSTREAMFLOW|MAXSTREAMFLOW
 TIMESTEP={freq}
 TIME_BEGIN={time_begin_ctrl}
@@ -1722,8 +1766,7 @@ ROUTING_PARAM_SET={gage_id}kw
 BASIN={gage_id}
 PRECIP={precip_name}
 PET=PET
-OUTPUT={hp_output_folder}
-STATES={hp_states_folder}
+{save_state_block(**save_state_fields['hp'])}
 output_grids=MAXUNITSTREAMFLOW|MAXSTREAMFLOW
 TIMESTEP={freq}
 TIME_BEGIN={time_begin_ctrl}
@@ -1746,7 +1789,11 @@ def _create_one_control_file(
     model_to_run: str,
     freq: str,
     coord_source: str,
-):
+        save_state: str = 'false',
+        read_states: str = 'false',
+        initstatetimestep: str = '',
+        stateinterval: str = '1d',
+    ):
     gage_id = str(gage_id).strip()
 
     if gage_id not in summary_lookup:
@@ -1792,7 +1839,11 @@ def _create_one_control_file(
             freq=freq,
             model_to_run=model_to_run,
             region=region,
-        )
+                save_state=save_state,
+                read_states=read_states,
+                initstatetimestep=initstatetimestep,
+                stateinterval=stateinterval,
+          )
 
         out_file = out_dir / f"control_{gage_id}.txt"
         out_file.write_text(control_text, encoding="utf-8")
@@ -1832,7 +1883,11 @@ def create_control_files_for_all_gages(
     max_workers: int = 8,
     skip_gages=None,
     coord_source: str = "snapped",
-):
+        save_state: str = 'false',
+        read_states: str = 'false',
+        initstatetimestep: str = '',
+        stateinterval: str = '1d',
+    ):
     project_root = Path.cwd()
 
     gage_csv = project_root / "gages" / "gage_ids.csv"
@@ -1947,7 +2002,11 @@ def create_control_files_for_all_gages(
                 model_to_run,
                 freq,
                 coord_source,
-            ): gage_id
+                    save_state,
+                    read_states,
+                    initstatetimestep,
+                    stateinterval,
+                ): gage_id
             for gage_id in gage_ids
         }
 
@@ -2388,6 +2447,10 @@ def run_full_ef5_setup(
     create_plots: bool = True,
     coord_source: str = "snapped",
     refresh_usgs_coords: bool = False,
+    save_state: str = 'false',
+    read_states: str = 'false',
+    initstatetimestep: str = '',
+    stateinterval: str = '1d',
 ):
     """
     Execute the complete 6-step EF5 hydrological modeling workflow.
@@ -2533,6 +2596,10 @@ def run_full_ef5_setup(
         max_workers=control_workers,
         skip_gages=skip_gages,
         coord_source=coord_source,
+        save_state=save_state,
+        read_states=read_states,
+        initstatetimestep=initstatetimestep,
+        stateinterval=stateinterval,
     )
 
     # Step 5: Execute EF5 hydrological model simulations
@@ -2565,8 +2632,29 @@ def run_full_ef5_setup(
 
 
 def main():
+
     parser = argparse.ArgumentParser(
         description="Run full EF5 setup workflow for all gages in gages/gage_ids.csv"
+    )
+    parser.add_argument(
+        "--save-state",
+        default='false',
+        help="Value for SAVE_STATE in [Task] blocks (default: false)",
+    )
+    parser.add_argument(
+        "--read-states",
+        default='false',
+        help="Value for READ_STATES in [Task] blocks (default: false)",
+    )
+    parser.add_argument(
+        "--initstatetimestep",
+        default='',
+        help="Value for INITSTATETIMESTEP in [Task] blocks (default: empty)",
+    )
+    parser.add_argument(
+        "--stateinterval",
+        default='1d',
+        help="Value for STATEINTERVAL in [Task] blocks (default: 1d)",
     )
 
     parser.add_argument(
@@ -2645,6 +2733,20 @@ def main():
 
     args = parser.parse_args()
 
+    # Determine INITSTATETIMESTEP default: if not provided, use TIME_BEGIN in YYYYMMDD_HHMM format
+    initstatetimestep = args.initstatetimestep
+    if not initstatetimestep:
+        # Convert TIME_BEGIN (YYYYMMDDHHMMSS) to YYYYMMDD_HHMM
+        tb = str(args.time_begin).strip()
+        if len(tb) == 14:
+            dt = datetime.strptime(tb, "%Y%m%d%H%M%S")
+            initstatetimestep = dt.strftime("%Y%m%d_%H%M")
+        elif len(tb) == 12:
+            dt = datetime.strptime(tb, "%Y%m%d%H%M")
+            initstatetimestep = dt.strftime("%Y%m%d_%H%M")
+        else:
+            raise ValueError("Invalid --time-begin format. Use YYYYMMDDHHMMSS or YYYYMMDDHHMM.")
+
     results = run_full_ef5_setup(
         time_begin=args.time_begin,
         time_end=args.time_end,
@@ -2659,6 +2761,10 @@ def main():
         create_plots=not args.no_plots,
         coord_source=args.coord_source,
         refresh_usgs_coords=args.refresh_usgs_coords,
+        save_state=args.save_state,
+        read_states=args.read_states,
+        initstatetimestep=initstatetimestep,
+        stateinterval=args.stateinterval,
     )
 
     print("\nWorkflow complete.")
