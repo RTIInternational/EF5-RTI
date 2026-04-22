@@ -174,9 +174,9 @@ def get_basic_rasters_for_region(project_root: Path, region: str):
     if region == "PUERTO_RICO":
         base = project_root / "data" / "EF5-oCONUS-Parameters" / "basic"
         return (
-            base / "carib_fdir_102016.tif",
-            base / "carib_facc_102016.tif",
-            base / "carib_dem_102016.tif",
+            base / "masked_carib_fdir_032719.tif",
+            base / "masked_carib_facc_032719.tif",
+            base / "masked_carib_dem_041718.tif",
         )
 
     base = project_root / "data" / "EF5_US_Params" / "basic"
@@ -1420,25 +1420,18 @@ def normalize_model_name(model_to_run: str) -> str:
 def build_precip_block(freq: str, region: str = "CONUS") -> tuple[str, str]:
     """
     Generate EF5 precipitation forcing configuration block based on temporal frequency.
-    
+
     Configures either 2-minute MRMS GRIB2 data or hourly QPE data depending on the
     modeling time step. The precipitation forcing section tells EF5 where to find
     rainfall inputs and how to interpret the file naming convention.
-    
+
     Parameters
-    ---------- 
+    ----------
     freq : str
         Time frequency: '2u' for 2-minute, '1h' for hourly
     region : str
         Region key used for hourly precipitation folder selection
-        
-    Returns
-    -------
-    tuple
-        (precip_block, precip_name) where:
-        - precip_block: Multi-line string with EF5 PrecipForcing section
-        - precip_name: Forcing name identifier for use in task configuration
-        
+
     Notes
     -----
     - 2-minute data uses MRMS GRIB2 format from Forcings/Precipitation/2min/
@@ -1462,21 +1455,27 @@ def build_precip_block(freq: str, region: str = "CONUS") -> tuple[str, str]:
             f"{sorted(hourly_folder_by_region.keys())}"
         )
     hourly_folder = hourly_folder_by_region[region]
-
     if freq == "2u":
         precip_name = "MRMS_GRIB"
+        # All regions use .gz extension for 2-minute data
+        if region == "CONUS":
+            name = "PrecipRate_00.00_YYYYMMDD-HHUU00.grib2.gz"
+        else:
+            name = "MRMS_PrecipRate_00.00_YYYYMMDD-HHUU00.grib2.gz"
         precip_block = f"""[PrecipForcing {precip_name}]
 TYPE=GRIB2
 UNIT=mm/h
 FREQ=2u
 LOC=Forcings/Precipitation/2min/{hourly_folder}
-NAME=PrecipRate_00.00_YYYYMMDD-HHUU00.grib2
+NAME={name}
 """
     else:
         precip_name = "MRMS"
-        hourly_name = "RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz"
-        if region == "HAWAII":
+        # AK, HI, PR use MRMS_ prefix for hourly data
+        if region in ("HAWAII", "PUERTO_RICO", "ALASKA"):
             hourly_name = "MRMS_RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz"
+        else:
+            hourly_name = "RadarOnly_QPE_01H_00.00_YYYYMMDD-HH0000.grib2.gz"
         precip_block = f"""[PrecipForcing {precip_name}]
 TYPE=GRIB2
 UNIT=mm/h
@@ -1505,18 +1504,18 @@ def build_control_file_text(
 ) -> str:
     """
     Generate complete EF5 control file text with all required configuration sections.
-    
+
     This is the most complex function in the workflow, generating a comprehensive EF5
     control file that includes basic settings, forcing data paths, gauge definitions,
     basin boundaries, parameter sets for multiple models (CREST, SAC-SMA, HP), routing
     parameters, and task execution instructions.
-    
+
     Parameters
     ----------
     gage_id : str
         USGS stream gage identifier (8-digit format)
     latitude : float
-        Gage latitude in decimal degrees (EPSG:4326) 
+        Gage latitude in decimal degrees (EPSG:4326)
     longitude : float
         Gage longitude in decimal degrees (EPSG:4326)
     basin_area_sqkm : float
@@ -1524,35 +1523,29 @@ def build_control_file_text(
     time_begin : str
         Simulation start time in EF5 format (YYYYMMDDHHMMSS)
     time_end : str
-        Simulation end time in EF5 format (YYYYMMDDHHMMSS)  
+        Simulation end time in EF5 format (YYYYMMDDHHMMSS)
     freq : str
         Time step frequency ('1h' for hourly, '2u' for 2-minute)
     model_to_run : str
         Hydrological model to execute ('CREST', 'SAC', or 'HP')
-        
-    Returns
-    -------
-    str
-        Complete multi-section EF5 control file text ready for file writing
-        
-    Notes
+
     -----
     The generated control file contains these major sections:
     - [Basic]: Computational domain and outlet specifications
     - [PrecipForcing]: Precipitation data source configuration
-    - [PETForcing]: Potential evapotranspiration data configuration  
+    - [PETForcing]: Potential evapotranspiration data configuration
     - [Gauge]: Stream gage location and metadata
     - [Basin]: Watershed boundary definition
     - [ParamSet]: Model parameter grids for CREST, SAC-SMA, HP models
     - [kwparamset]: Kinematic wave routing parameters
     - [Task]: Model execution task for the specified model
     - [Execute]: Task execution sequence
-    
+
     The function supports three hydrological models:
     - CREST: Coupled Routing and Excess Storage model
-    - SAC-SMA: Sacramento Soil Moisture Accounting model  
+    - SAC-SMA: Sacramento Soil Moisture Accounting model
     - HP: Hydrologic Prediction model (simplified)
-    
+
     All parameter grids reference continental-scale datasets in data/EF5_US_Params/
     """
     gage_id = str(gage_id).strip()
@@ -2722,8 +2715,8 @@ def main():
     parser.add_argument(
         "--coord-source",
         choices=["snapped", "usgs"],
-        default="snapped",
-        help="Coordinate source for control-file gauge LAT/LON",
+        default="usgs",
+        help="Coordinate source for control-file gauge LAT/LON (default: usgs)",
     )
     parser.add_argument(
         "--refresh-usgs-coords",
