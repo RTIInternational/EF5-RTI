@@ -74,6 +74,8 @@ def fetch_usgs_iv(gage_id: str, start_utc: datetime, end_utc: datetime):
 
         try:
             q_cfs = float(val_str)
+            if q_cfs == -9999:
+                q_cfs = float('nan')
         except ValueError:
             continue
 

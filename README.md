@@ -24,9 +24,13 @@ In that context, this project focuses on the *data preparation* side of an EF5-F
   - **Recommended path:** follow this notebook sequentially from top to bottom.
 
 - `download_mrms_preciprate.sh`
-  - Bash helper script to download MRMS PrecipRate `.gz` files from IEM mtarchive for a date range.
-  - Supports dry-run mode and skips files that already exist locally.
-  - Decompresses downloaded `.gz` files at the end of a real run.
+  - Bash helper script to download MRMS precipitation `.gz` files for a date range.
+  - Supports both 2-minute and hourly products for CONUS, Hawaii, Puerto Rico, and Alaska.
+  - Uses IEM mtarchive for CONUS and NOAA MRMS PDS (AWS S3) for HI/PR/AK.
+  - Requires explicit product selection (`--product 2min` or `--product hourly`).
+  - Supports optional region selection (`--region CONUS|HI|PR|AK|all`, default: `all`).
+  - Supports dry-run mode, parallel downloads, and skipping files that already exist locally.
+  - Optionally decompresses downloaded `.gz` files at the end of a real run.
 
 - `fetch_usgs_from_control.py`
   - Python helper script to download USGS NWIS instantaneous streamflow (`parameterCd=00060`) for one gauge and date range.
@@ -74,24 +78,64 @@ Dry-run first (recommended):
 
 ```bash
 ./download_mrms_preciprate.sh \
+  --product 2min \
+  --region CONUS \
   --start-date 2022-07-27 \
   --end-date 2022-07-30 \
   --dest-dir ~/MRMS_preciprate \
   --dry-run
 ```
 
-Run actual download:
+Run actual 2-minute PrecipRate download:
 
 ```bash
 ./download_mrms_preciprate.sh \
+  --product 2min \
+  --region CONUS \
   --start-date 2022-07-27 \
   --end-date 2022-07-30 \
   --dest-dir ~/MRMS_preciprate
 ```
 
+Run hourly QPE download for Hawaii (on-the-hour files only):
+
+```bash
+./download_mrms_preciprate.sh \
+  --product hourly \
+  --region HI \
+  --start-date 2021-01-01 \
+  --end-date 2021-01-02 \
+  --dest-dir ~/MRMS_preciprate \
+  --jobs 8
+```
+
+Run all regions (default) in one command:
+
+```bash
+./download_mrms_preciprate.sh \
+  --product hourly \
+  --start-date 2021-01-01 \
+  --end-date 2021-01-02 \
+  --dest-dir ~/MRMS_preciprate \
+  --jobs 16
+```
+
 Behavior notes:
-- Creates destination directory if it does not exist.
+- `--product` is required and must be either `2min` or `hourly`.
+- `--start-date` and `--end-date` are required (no default date range).
+- `--region` accepts `CONUS`, `HI`, `PR`, `AK`, or `all` (default).
+- Source selection by region:
+  - `CONUS` -> `https://mtarchive.geol.iastate.edu/.../mrms/ncep/{PrecipRate|RadarOnly_QPE_01H}/`
+  - `HI`/`PR`/`AK` -> `https://noaa-mrms-pds.s3.amazonaws.com/{HAWAII|CARIB|ALASKA}/{PrecipRate_00.00|RadarOnly_QPE_01H_00.00}/YYYYMMDD/`
+- For `HI`, `PR`, and `AK`, `--start-date` must be `2020-10-15` or later.
+- Creates destination directory if it does not exist and writes into product and region subfolders:
+  - `--dest-dir ~/MRMS_preciprate` + `--product 2min` + `--region CONUS` -> `~/MRMS_preciprate/2min/CONUS`
+  - `--dest-dir ~/MRMS_preciprate` + `--product hourly` + `--region HI` -> `~/MRMS_preciprate/hourly/HI`
+- Hourly mode keeps only files at minute/second `00:00` (one file per hour).
+- Parallelism is supported with `--jobs N` (defaults to available CPU cores).
 - Skips files that already exist (either `.gz` or already decompressed version).
+- Downloads are processed incrementally by region and day (not one huge queue), which is better for long multi-year runs.
+- Downloads use resume mode (`wget --continue`), so rerunning after interruption will continue partial `.gz` files when the source supports byte ranges.
 - Prints a compact summary with skipped/downloaded counts.
 - In dry-run mode, no files are downloaded or decompressed.
 
@@ -121,9 +165,43 @@ Behavior notes:
 - Output file pattern:
   - `Streamflow_Time_Series_CMS_UTC_USGS_<gauge>.csv`
 
+## Storage projections
+
+The following estimates are based on measured average file sizes from local data
+folders and can be used for rough planning.
+
+### Hourly MRMS files (`.grib2.gz`)
+
+Measured basis:
+- average hourly file size: 617.43 KB (632,252.82 bytes)
+- cadence: 24 files/day
+
+| Interval | Hourly files | Projected storage |
+|---|---:|---:|
+| 1 day | 24 | 14.47 MB |
+| 1 week | 168 | 101.30 MB |
+| 1 month (30 days) | 720 | 434.13 MB |
+| 1 year (365 days) | 8,760 | 5.16 GB |
+| 5 years | 43,800 | 25.79 GB |
+
+### 2-minute MRMS PrecipRate files (`.grib2`)
+
+Measured basis:
+- average 2-minute GRIB2 file size: 643.94 KB (659,392 bytes)
+- average `.idx` size: 1.33 KB (1,360 bytes)
+- cadence: 720 files/day (one file every 2 minutes)
+
+| Interval | 2-minute files | GRIB2 only | GRIB2 + IDX |
+|---|---:|---:|---:|
+| 1 day | 720 | 452.77 MB | 453.70 MB |
+| 1 week | 5,040 | 3.10 GB | 3.10 GB |
+| 1 month (30 days) | 21,600 | 13.26 GB | 13.29 GB |
+| 1 year (365 days) | 262,800 | 161.39 GB | 161.72 GB |
+| 5 years | 1,314,000 | 806.94 GB | 808.60 GB |
+
 ## Dependencies and environment
 
-- `download_mrms_preciprate.sh` requires common shell tools and `wget`, `grep`, `sed`, `gunzip`.
+- `download_mrms_preciprate.sh` requires common shell tools and `wget`, `grep`, `sed`, `gunzip`, `xargs`.
 - `fetch_usgs_from_control.py` uses Python 3 standard library only.
 - Notebook and geospatial preprocessing steps rely on additional Python packages listed in `requirements.txt`.
 
@@ -152,7 +230,8 @@ The notebook references the following external sources.
 
 | Source (webpage/repo) | What it is and how it is used |
 |---|---|
-| [IEM MTArchive (MRMS PrecipRate)](https://mtarchive.geol.iastate.edu/) | Iowa State IEM archive hosting historical MRMS PrecipRate files, used by `download_mrms_preciprate.sh` to pull precipitation forcing by date. |
+| [IEM MTArchive (MRMS Precipitation Archives)](https://mtarchive.geol.iastate.edu/) | Iowa State IEM archive hosting historical MRMS precipitation products, used by `download_mrms_preciprate.sh` for CONUS downloads (`PrecipRate` and `RadarOnly_QPE_01H`). |
+| [NOAA MRMS PDS on AWS S3](https://noaa-mrms-pds.s3.amazonaws.com/index.html) | Public AWS-hosted MRMS archive used by `download_mrms_preciprate.sh` for HI/PR/AK downloads from `HAWAII`, `CARIB`, and `ALASKA` nests (`PrecipRate_00.00` and `RadarOnly_QPE_01H_00.00`). |
 | [USGS StreamStats](https://streamstats.usgs.gov/) | USGS watershed delineation and basin data portal used to obtain basin boundaries and related geospatial inputs for model setup. |
 | [USGS WaterData station 04085200](https://waterdata.usgs.gov/monitoring-location/04085200/) | Station information page for the example gage in this workflow, used to verify gauge metadata and context for observation downloads. |
 | [HyDROSLab/EF5-US-Parameters](https://github.com/HyDROSLab/EF5-US-Parameters) | Parameter dataset repository referenced for national-scale EF5 parameter layers used as source inputs before clipping/preprocessing. |
