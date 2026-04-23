@@ -1,0 +1,26 @@
+./download_mrms_preciprate.sh --product hourly --region all -s 2020-10-15 -e 2020-12-31 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2021-01-01 -e 2021-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2021-07-01 -e 2021-12-31 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2022-01-01 -e 2022-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2022-07-01 -e 2022-12-31 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2023-01-01 -e 2023-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2023-07-01 -e 2023-12-31 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+
+./download_mrms_preciprate.sh --product hourly --region all -s 2024-01-01 -e 2024-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region HI -s 2024-04-15 -e 2024-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region PR -s 2024-01-01 -e 2024-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region AK -s 2024-01-01 -e 2024-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+
+./download_mrms_preciprate.sh --product hourly --region all -s 2024-07-01 -e 2024-12-31 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+
+./download_mrms_preciprate.sh --product hourly --region all -s 2025-01-01 -e 2025-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region AK -s 2025-05-16 -e 2025-06-30 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+
+./download_mrms_preciprate.sh --product hourly --region all -s 2025-07-01 -e 2025-12-31 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2026-01-01 -e 2026-04-20 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+
+./download_mrms_preciprate.sh --product hourly --region all -s 2021-06-30 -e 2021-07-01 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2022-06-30 -e 2022-07-01 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2023-06-30 -e 2023-07-01 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2024-06-30 -e 2024-07-01 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
+./download_mrms_preciprate.sh --product hourly --region all -s 2025-06-30 -e 2025-07-01 -d /ncrc/home2/Anthony.Preucil/apscratch/data -j 24
